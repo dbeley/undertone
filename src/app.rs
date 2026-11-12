@@ -626,6 +626,10 @@ impl App {
                     }
                 }
                 PlayerEvent::Crashed(message) => {
+                    // The player is gone, so nothing is loaded any more: `p`
+                    // must restart the track rather than pause a corpse.
+                    self.now.loaded = false;
+                    self.now.paused = true;
                     self.error(format!("player crashed: {message}"));
                 }
                 PlayerEvent::FileLoaded | PlayerEvent::Volume(_) | PlayerEvent::Idle => {}

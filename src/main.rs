@@ -39,6 +39,9 @@ fn main() {
 
 fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     let env = |key: &str| std::env::var(key).ok();
+    // Startup problems that degrade a feature instead of stopping the app are
+    // collected here and shown in the status line once the UI exists.
+    let mut startup_warnings: Vec<String> = Vec::new();
 
     let config_path = args.config.as_deref().map(std::path::Path::new);
     let (config, loaded) = Config::load(config_path, &env)?;
@@ -57,11 +60,21 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         password: settings.password.clone(),
     });
 
-    let server_info = client
-        .ping()
-        .map_err(|err| format!("cannot reach {}: {err}", settings.server))?;
+    let server_info = match client.ping() {
+        Ok(info) => Some(info),
+        Err(_err) => {
+            // A server you cannot reach must not stop the app: there is still a
+            // restored queue to look at and a config to fix, and quitting here
+            // would make the failure look like a crash.
+            //
+            // The message is short on purpose: the error chain is long enough
+            // to push every other warning off the status line.
+            startup_warnings.push(format!("cannot reach {} — R to retry", settings.server));
+            None
+        }
+    };
 
-    let protocol = resolve_protocol(&args, &settings);
+    let mut protocol = resolve_protocol(&args, &settings);
     let caps = Caps {
         protocol,
         cell: CellSize::detect(),
@@ -70,23 +83,55 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(false),
     };
 
-    let source: Option<Arc<dyn ImageSource>> = if protocol.is_pixel() {
-        // Ask the server for pre-scaled art so the weak device never decodes
-        // a full-size image.
-        Some(Arc::new(SubsonicImageSource::new(client.clone())))
-    } else {
-        None
+    let make_source = |protocol: ArtProtocol| -> Option<Arc<dyn ImageSource>> {
+        if protocol.is_pixel() {
+            // Ask the server for pre-scaled art so the weak device never
+            // decodes a full-size image.
+            Some(Arc::new(SubsonicImageSource::new(client.clone())))
+        } else {
+            None
+        }
     };
-    let art =
-        ArtService::from_settings(protocol, &settings.cache_dir, settings.cache_bytes, source)?;
+
+    let mut art = ArtService::from_settings(
+        protocol,
+        &settings.cache_dir,
+        settings.cache_bytes,
+        make_source(protocol),
+    );
+    if art.is_err() {
+        // An unusable cache directory is a reason to lose art, not to lose the
+        // player. Retry somewhere writable with art switched off.
+        startup_warnings.push(format!(
+            "art cache unusable ({}) — art off",
+            settings.cache_dir.display()
+        ));
+        protocol = ArtProtocol::Off;
+        art = ArtService::from_settings(
+            ArtProtocol::Off,
+            &std::env::temp_dir().join("undertone-art"),
+            1 << 20,
+            None,
+        );
+    }
+    let art = art?;
 
     let player: Box<dyn Player> = if args.player == "null" {
         Box::new(NullPlayer::new())
     } else {
-        Box::new(MpvPlayer::spawn(&MpvOptions {
+        let options = MpvOptions {
             binary: settings.mpv_binary.clone(),
             ..Default::default()
-        })?)
+        };
+        match MpvPlayer::spawn(&options) {
+            Ok(player) => Box::new(player),
+            Err(_err) => {
+                // mpv missing or refusing to start: browsing still works, and
+                // saying so beats exiting with a stack of context.
+                startup_warnings.push("mpv unavailable — playback disabled".to_string());
+                Box::new(NullPlayer::new())
+            }
+        }
     };
 
     // Listen later lives in the state directory: it is user data, not cache,
@@ -99,15 +144,21 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         None => ListenLater::load("/tmp/undertone-listen-later.json"),
     };
     let mut app = App::new(client, settings, player, art, protocol, 70, listen_later);
-    app.status(format!(
-        "{} {} · art {} · cell {}x{}",
-        server_info.server_type.as_deref().unwrap_or("subsonic"),
-        server_info.version,
-        protocol.label(),
-        caps.cell.width,
-        caps.cell.height
-    ));
-    app.load_albums();
+    if let Some(info) = server_info.as_ref() {
+        app.status(format!(
+            "{} {} · art {} · cell {}x{}",
+            info.server_type.as_deref().unwrap_or("subsonic"),
+            info.version,
+            protocol.label(),
+            caps.cell.width,
+            caps.cell.height
+        ));
+    }
+    // Skip the fetch when the server did not answer: a second failure message
+    // would bury the one that says which URL was tried.
+    if server_info.is_some() {
+        app.load_albums();
+    }
 
     // Restore what was playing last time. Done after the status line so the
     // "restored" message is the one you actually see.
@@ -117,7 +168,12 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if let Some(path) = loaded {
+    // Warnings last so a degraded start is what you see. Each of these used to
+    // be a hard failure; the messages are the only evidence the app is running
+    // without something it asked for.
+    if !startup_warnings.is_empty() {
+        app.error(startup_warnings.join(" · "));
+    } else if let Some(path) = loaded {
         app.status(format!("config: {}", path.display()));
     }
 
