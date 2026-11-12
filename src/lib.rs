@@ -9,6 +9,7 @@ pub mod cli;
 pub mod config;
 pub mod event;
 pub mod player;
+pub mod process;
 pub mod queue;
 pub mod render;
 pub mod subsonic;

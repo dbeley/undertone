@@ -9,6 +9,18 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use super::protocol::ArtProtocol;
+use crate::process::detach_from_terminal;
+
+/// Keep chafa away from the controlling terminal.
+///
+/// By default chafa probes the terminal — `OSC 10;?` / `OSC 11;?` for the
+/// foreground and background colours, `CSI 14t`/`16t`/`18t` for cell metrics.
+/// The terminal's replies go to the process that owns stdin, which is us, and
+/// crossterm decodes them as keystrokes: an `OSC 10 ; rgb:d6d6/e3e3/f4f4`
+/// report arrives as `Alt+]`, `1`, `0`, `;`, `r`, `g`, `b`, … and that `r`
+/// cycles repeat. Probing over stdio instead of the tty leaves a pipe and
+/// `/dev/null`, so the queries fail harmlessly and nothing is written.
+const PROBE_ARGS: [&str; 1] = ["--probe-mode=stdio"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -73,9 +85,11 @@ impl ChafaRenderer {
     }
 
     fn render_one(&self, request: &RenderRequest, format: &str) -> Result<Vec<u8>, RenderError> {
-        let output = Command::new(&self.binary)
+        let mut command = Command::new(&self.binary);
+        command
             .arg("-f")
             .arg(format)
+            .args(PROBE_ARGS)
             .arg("--size")
             .arg(format!("{}x{}", request.cols, request.rows))
             .arg("--colors")
@@ -83,7 +97,9 @@ impl ChafaRenderer {
             .arg(&request.source)
             // Never let chafa inherit the terminal's stdin: a child reading it
             // would steal keystrokes from the UI.
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null());
+        detach_from_terminal(&mut command);
+        let output = command
             .output()
             .map_err(|err| RenderError::Io(format!("{}: {err}", self.binary.display())))?;
         if !output.status.success() {
@@ -135,13 +151,16 @@ impl ArtRenderer for ChafaRenderer {
         command
             .arg("-f")
             .arg(format)
+            .args(PROBE_ARGS)
             .arg("--size")
             .arg(format!("{}x{}", shape.0, shape.1))
             .arg("--colors")
-            .arg(shape.2.to_string());
+            .arg(shape.2.to_string())
+            .stdin(std::process::Stdio::null());
         for request in requests {
             command.arg(&request.source);
         }
+        detach_from_terminal(&mut command);
 
         let output = command
             .output()

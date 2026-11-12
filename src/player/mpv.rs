@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
+
+use crate::process::detach_from_terminal;
 use std::time::{Duration, Instant};
 
 use super::protocol::{encode_command, encode_observe, encode_set, parse_event};
@@ -92,6 +94,9 @@ impl MpvPlayer {
         if let Some(volume) = options.volume {
             command.arg(format!("--volume={volume}"));
         }
+        // mpv must not own the terminal either; a child with /dev/tty can
+        // probe it and the replies are read as UI keystrokes.
+        detach_from_terminal(&mut command);
 
         let child = command
             .spawn()
