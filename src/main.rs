@@ -1,8 +1,7 @@
 //! Undertone — a Subsonic/Navidrome client for very weak Linux hardware.
 
-mod cli;
-
 use clap::Parser;
+use undertone::cli;
 
 fn main() {
     let args = cli::Args::parse();
