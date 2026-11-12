@@ -10,7 +10,7 @@
 
 ## Status
 
-Phases 0–4 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache, player trait, mpv IPC, queue, scrobbler, render pipeline, and a runnable TUI). Verified live against Navidrome 0.64.2, with real mpv 0.42 through a null sink, with real chafa 1.18 output fixtures, and by running the TUI itself in a 100x30 pty. Phase 5 (discovery pane, Auto DJ, Listen Later, session restore) and Phase 6 (perf harness, error paths, docs) outstanding. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
+Phases 0–5 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache, player trait, mpv IPC, queue, scrobbler, render pipeline, a runnable TUI, album paging, Listen Later, Auto DJ, session restore). Verified live against Navidrome 0.64.2, with real mpv 0.42 through a null sink, with real chafa 1.18 output fixtures, and by running the TUI itself in a 100x30 pty. Phase 6: the resource harness and the error-path suite are done (see `docs/PERFORMANCE.md`); the degradation matrix and the remaining docs are outstanding. Discovery was dropped by request until the app is more complete. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
 
 ---
 

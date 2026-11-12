@@ -446,7 +446,7 @@ mod tests {
             }
             Ok(requests
                 .iter()
-                .map(|r| format!("\x1bPfake-{}", r.cols).into_bytes())
+                .map(|r| format!("\x1bPfake-{}\x1b\\", r.cols).into_bytes())
                 .collect())
         }
     }

@@ -20,6 +20,20 @@ pub struct BlobCache {
     newest_key: Option<String>,
 }
 
+/// Cheap check that a cached blob ends the way a finished escape sequence does.
+///
+/// chafa terminates sixel and kitty payloads with ST (`ESC \\`) and appends a
+/// cursor-show (`ESC [ ? 25 h`), so either tail counts. A truncated file loses
+/// both.
+fn looks_complete(blob: &[u8]) -> bool {
+    const ENDINGS: [&[u8]; 3] = [b"\x1b\\", b"\x1b[?25h", b"\x9c"];
+    if blob.len() < 4 || blob[0] != 0x1b {
+        return false;
+    }
+    let trimmed = blob.trim_ascii_end();
+    ENDINGS.iter().any(|ending| trimmed.ends_with(ending))
+}
+
 impl BlobCache {
     /// Open (creating if needed) a cache directory with a byte budget.
     pub fn new(root: impl Into<PathBuf>, capacity_bytes: u64) -> io::Result<Self> {
@@ -51,9 +65,19 @@ impl BlobCache {
         self.root.join(key_to_filename(key))
     }
 
-    /// Read a blob. Returns `None` on a miss or an unreadable file.
+    /// Read a blob. Returns `None` on a miss, an unreadable file, or a blob
+    /// that does not look finished.
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        fs::read(self.path_for(key)).ok()
+        let blob = fs::read(self.path_for(key)).ok()?;
+        // Writes are not fsynced (see `put`), so a power cut can leave a
+        // truncated file behind. Reject it here rather than handing half a
+        // sixel to the terminal: it is re-rendered instead, which is cheap,
+        // whereas a corrupt blob is visible and permanent.
+        if looks_complete(&blob) {
+            Some(blob)
+        } else {
+            None
+        }
     }
 
     pub fn contains(&self, key: &str) -> bool {
@@ -75,7 +99,11 @@ impl BlobCache {
         {
             let mut file = fs::File::create(&temp_path)?;
             file.write_all(blob)?;
-            file.sync_all()?;
+            // Deliberately no `sync_all`: this is a cache, and a durable write
+            // per cover costs about 7 ms on this machine — far more on an SD
+            // card, which is exactly the hardware this targets. The rename is
+            // still atomic, and `get` rejects a truncated blob, so the worst
+            // case after a power cut is re-rendering one image.
         }
         fs::rename(&temp_path, &final_path)?;
 
@@ -212,12 +240,35 @@ mod tests {
     #[test]
     fn round_trips_a_blob() {
         let mut cache = BlobCache::new(temp_root("roundtrip"), 1024).unwrap();
-        cache.put("album/1/40x40-16-sixel", b"\x1bP hello").unwrap();
+        let blob = b"\x1bP1;1;40;40#0;2;0;0;0#0!40~\x1b\\";
+        cache.put("album/1/40x40-16-sixel", blob).unwrap();
         assert_eq!(
             cache.get("album/1/40x40-16-sixel").as_deref(),
-            Some(&b"\x1bP hello"[..])
+            Some(&blob[..])
         );
         assert!(cache.contains("album/1/40x40-16-sixel"));
+    }
+
+    #[test]
+    fn a_truncated_blob_is_a_miss_not_a_corrupt_image() {
+        let mut cache = BlobCache::new(temp_root("truncated"), 1024).unwrap();
+        let blob = b"\x1bP1;1;40;40#0;2;0;0;0#0!40~\x1b[?25h";
+        cache.put("k", blob).unwrap();
+        assert!(cache.get("k").is_some());
+
+        // Simulate the tail being lost to a power cut.
+        std::fs::write(cache.path_for("k"), &blob[..blob.len() - 20]).unwrap();
+        assert!(
+            cache.get("k").is_none(),
+            "a half-written blob must be re-rendered, not painted"
+        );
+    }
+
+    #[test]
+    fn junk_is_never_returned_as_a_blob() {
+        let cache = BlobCache::new(temp_root("junk"), 1024).unwrap();
+        std::fs::write(cache.path_for("k"), b"not an image at all").unwrap();
+        assert!(cache.get("k").is_none());
     }
 
     #[test]
@@ -230,11 +281,11 @@ mod tests {
     #[test]
     fn overwriting_replaces_and_reaccounts() {
         let mut cache = BlobCache::new(temp_root("overwrite"), 1024).unwrap();
-        cache.put("k", b"0123456789").unwrap();
-        assert_eq!(cache.used_bytes(), 10);
-        cache.put("k", b"abc").unwrap();
-        assert_eq!(cache.used_bytes(), 3);
-        assert_eq!(cache.get("k").as_deref(), Some(&b"abc"[..]));
+        cache.put("k", b"\x1bP0123456789\x1b\\").unwrap();
+        assert_eq!(cache.used_bytes(), 14);
+        cache.put("k", b"\x1bPabc\x1b\\").unwrap();
+        assert_eq!(cache.used_bytes(), 7);
+        assert_eq!(cache.get("k").as_deref(), Some(&b"\x1bPabc\x1b\\"[..]));
     }
 
     #[test]

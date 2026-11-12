@@ -22,6 +22,10 @@ jobs:
         run: nix develop -c cargo clippy --all-targets -- -D warnings
       - name: test
         run: nix develop -c cargo test
+      - name: perf budget
+        # Release build: the timings in tests/perf.rs are meant to catch
+        # regressions in optimised code, where the idle plan is a few µs.
+        run: nix develop -c cargo test --release --test perf
       - name: build
         run: nix build .# --print-build-logs
       - name: binary size gate
