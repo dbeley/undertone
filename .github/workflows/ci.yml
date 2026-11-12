@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: flake check
+        run: nix flake check --print-build-logs
+      - name: fmt
+        run: nix develop -c cargo fmt --check
+      - name: clippy
+        run: nix develop -c cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: nix develop -c cargo test
+      - name: build
+        run: nix build .# --print-build-logs
+      - name: binary size gate
+        run: |
+          size=$(stat -c%s result/bin/undertone)
+          echo "binary size: $size bytes"
+          limit=12582912
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::binary is $size bytes, exceeding the 12 MB budget"
+            exit 1
+          fi
