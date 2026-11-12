@@ -10,7 +10,7 @@
 
 ## Status
 
-Design brainstorm complete. Plan awaiting review before implementation. No code written yet.
+Phases 0 and 1 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache), verified live against Navidrome 0.64.2. Phases 2–6 outstanding. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
 
 ---
 
