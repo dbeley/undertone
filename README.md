@@ -79,12 +79,13 @@ mpv = "mpv"
 ## Keys
 
 ```
-j / k      move            Enter   open album · play track
-g / G      first / last    Space   play / pause
-> / <      next / prev     f / b   seek ±10s
-s / r      shuffle/repeat  +/-     volume      m  mute
-Q          queue           ?       help        Esc back
-S / R      change sort / reload    q   quit
+j / k      move down / up      h / l   left / right (grid) · h back
+w          list / grid toggle  g / G   first / last
+Enter      open album · play track    Space  play / pause
+> / <      next / prev         f / b   seek ±10s
+s / r      shuffle / repeat    +/-     volume      m  mute
+Q          queue               ?       help        Esc back
+S / R      change sort / reload         q   quit
 ```
 
 ## Development

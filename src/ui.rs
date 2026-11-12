@@ -17,7 +17,10 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use crate::app::{App, View, ROW_HEIGHT, THUMB_CELLS, THUMB_ROWS};
+use crate::app::{
+    AlbumLayout, App, View, GRID_THUMB_H, GRID_THUMB_W, GRID_TILE_H, GRID_TILE_W, ROW_HEIGHT,
+    THUMB_CELLS, THUMB_ROWS,
+};
 use crate::art::ArtService;
 use crate::render::{FramePlan, PaintOp, Placement};
 
@@ -79,31 +82,60 @@ pub fn collect_placements(app: &mut App, area: Rect) {
 
     match app.view {
         View::Albums => {
-            app.ensure_visible(main.height as usize);
-            let visible = visible_albums(main);
+            app.ensure_visible(main.width, main.height);
             let colors = app.settings.thumb_colors;
-            for slot in 0..visible {
-                let index = app.scroll + slot;
-                let Some(album) = app.albums.get(index) else {
-                    break;
-                };
-                let Some(cover) = album.cover_art.as_deref() else {
-                    continue;
-                };
-                let key = app.art.request(
-                    cover,
-                    u32::from(THUMB_CELLS),
-                    u32::from(THUMB_ROWS),
-                    colors,
-                    index >= app.selected + visible,
-                );
-                app.placements.push(Placement::new(
-                    key,
-                    main.y + slot as u16 * ROW_HEIGHT,
-                    main.x,
-                    THUMB_ROWS,
-                    THUMB_CELLS,
-                ));
+            match app.layout {
+                AlbumLayout::List => {
+                    let visible = visible_albums(main);
+                    for slot in 0..visible {
+                        let index = app.scroll + slot;
+                        let Some(album) = app.albums.get(index) else {
+                            break;
+                        };
+                        let Some(cover) = album.cover_art.as_deref() else {
+                            continue;
+                        };
+                        let key = app.art.request(
+                            cover,
+                            u32::from(THUMB_CELLS),
+                            u32::from(THUMB_ROWS),
+                            colors,
+                            index >= app.selected + visible,
+                        );
+                        app.placements.push(Placement::new(
+                            key,
+                            main.y + slot as u16 * ROW_HEIGHT,
+                            main.x,
+                            THUMB_ROWS,
+                            THUMB_CELLS,
+                        ));
+                    }
+                }
+                AlbumLayout::Grid => {
+                    let cols = app.grid_columns(main.width).max(1) as u16;
+                    let tile_rows = (main.height / GRID_TILE_H).max(1);
+                    let per_page = usize::from(cols * tile_rows);
+                    for slot in 0..per_page {
+                        let index = app.scroll + slot;
+                        let Some(album) = app.albums.get(index) else {
+                            break;
+                        };
+                        let Some(cover) = album.cover_art.as_deref() else {
+                            continue;
+                        };
+                        let x = main.x + (slot as u16 % cols) * GRID_TILE_W;
+                        let y = main.y + (slot as u16 / cols) * GRID_TILE_H;
+                        let key = app.art.request(
+                            cover,
+                            u32::from(GRID_THUMB_W),
+                            u32::from(GRID_THUMB_H),
+                            colors,
+                            index >= app.selected + per_page,
+                        );
+                        app.placements
+                            .push(Placement::new(key, y, x, GRID_THUMB_H, GRID_THUMB_W));
+                    }
+                }
             }
         }
         View::AlbumDetail => {
@@ -177,6 +209,33 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_albums(frame: &mut Frame, app: &App, area: Rect) {
+    match app.layout {
+        AlbumLayout::List => draw_albums_list(frame, app, area),
+        AlbumLayout::Grid => draw_albums_grid(frame, app, area),
+    }
+
+    if app.albums.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No albums. Press R to reload, S to change sort.")
+                .style(Style::default().fg(MUTED)),
+            area,
+        );
+    }
+}
+
+/// Placeholder shown where a cover has not been painted yet.
+fn draw_thumb_placeholder(frame: &mut Frame, rect: Rect, has_cover: bool) {
+    if !has_cover {
+        return;
+    }
+    let glyph = "▚ ".repeat(usize::from(rect.width) / 2);
+    frame.render_widget(
+        Paragraph::new(glyph).style(Style::default().fg(MUTED)),
+        rect,
+    );
+}
+
+fn draw_albums_list(frame: &mut Frame, app: &App, area: Rect) {
     let visible = visible_albums(area);
     for slot in 0..visible {
         let index = app.scroll + slot;
@@ -186,8 +245,6 @@ fn draw_albums(frame: &mut Frame, app: &App, area: Rect) {
         let row = album_row_rect(area, slot);
         let is_selected = index == app.selected;
 
-        // Thumbnail column: draw a placeholder only when no blob is painted
-        // there, so we never overwrite a placed image with text.
         let thumb_key = album.cover_art.as_deref().map(|cover| {
             ArtService::key(
                 cover,
@@ -208,17 +265,9 @@ fn draw_albums(frame: &mut Frame, app: &App, area: Rect) {
                 width: THUMB_CELLS,
                 height: THUMB_ROWS,
             };
-            let glyph = if album.cover_art.is_some() {
-                "▚ "
-            } else {
-                "  "
-            };
-            let widget = Paragraph::new(glyph.repeat(usize::from(THUMB_CELLS) / 2))
-                .style(Style::default().fg(MUTED));
-            frame.render_widget(widget, placeholder);
+            draw_thumb_placeholder(frame, placeholder, album.cover_art.is_some());
         }
 
-        // Text column.
         let text_area = Rect {
             x: row.x + THUMB_CELLS + 1,
             y: row.y,
@@ -246,26 +295,74 @@ fn draw_albums(frame: &mut Frame, app: &App, area: Rect) {
         ];
         frame.render_widget(Paragraph::new(lines), text_area);
 
-        if is_selected {
-            // A marker in the leftmost column keeps selection visible even
-            // when the row has art covering the thumbnail cell.
+        if is_selected && !has_art {
             let marker = Rect {
                 x: row.x,
                 y: row.y,
                 width: 1,
                 height: 1,
             };
-            if !has_art {
-                frame.render_widget(Paragraph::new("▸").style(selected_style()), marker);
-            }
+            frame.render_widget(Paragraph::new("▸").style(selected_style()), marker);
         }
     }
+}
 
-    if app.albums.is_empty() {
+fn draw_albums_grid(frame: &mut Frame, app: &App, area: Rect) {
+    let cols = app.grid_columns(area.width).max(1) as u16;
+    let tile_rows = (area.height / GRID_TILE_H).max(1);
+    let per_page = usize::from(cols * tile_rows);
+
+    for slot in 0..per_page {
+        let index = app.scroll + slot;
+        let Some(album) = app.albums.get(index) else {
+            break;
+        };
+        let is_selected = index == app.selected;
+        let x = area.x + (slot as u16 % cols) * GRID_TILE_W;
+        let y = area.y + (slot as u16 / cols) * GRID_TILE_H;
+
+        let thumb_key = album.cover_art.as_deref().map(|cover| {
+            ArtService::key(
+                cover,
+                u32::from(GRID_THUMB_W),
+                u32::from(GRID_THUMB_H),
+                app.settings.thumb_colors,
+                app.protocol,
+            )
+        });
+        let has_art = thumb_key
+            .as_deref()
+            .map(|key| app.art.is_ready(key))
+            .unwrap_or(false);
+        if !has_art {
+            let placeholder = Rect {
+                x,
+                y,
+                width: GRID_THUMB_W,
+                height: GRID_THUMB_H,
+            };
+            draw_thumb_placeholder(frame, placeholder, album.cover_art.is_some());
+        }
+
+        // One line of text under the cover; the tile is too narrow for more.
+        let label_area = Rect {
+            x,
+            y: y + GRID_THUMB_H,
+            width: GRID_THUMB_W,
+            height: 1,
+        };
+        let label = if is_selected {
+            format!("▸{}", album.name)
+        } else {
+            format!(" {}", album.name)
+        };
         frame.render_widget(
-            Paragraph::new("No albums. Press R to reload, S to change sort.")
-                .style(Style::default().fg(MUTED)),
-            area,
+            Paragraph::new(label).style(if is_selected {
+                selected_style()
+            } else {
+                Style::default().fg(MUTED)
+            }),
+            label_area,
         );
     }
 }
@@ -404,6 +501,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("Undertone", title_style())),
         Line::from(""),
         Line::from("j / k      move down / up"),
+        Line::from("h / l      move left / right (grid) · h back"),
+        Line::from("w          toggle list / grid"),
         Line::from("g / G      first / last"),
         Line::from("Enter      open album · play track"),
         Line::from("Space      play / pause"),
@@ -447,9 +546,14 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         _ => (
             format!(
-                "{} · sort {} · ? help",
+                "{} · {} · art {} · shuffle {} · repeat {} · vol {}{}",
                 app.settings.server,
-                app.sort.as_str()
+                app.sort.as_str(),
+                app.protocol.label(),
+                if app.queue.is_shuffled() { "on" } else { "off" },
+                app.queue.repeat().label(),
+                app.volume,
+                if app.muted { " muted" } else { "" },
             ),
             Style::default().fg(MUTED),
         ),
@@ -541,5 +645,132 @@ mod tests {
         assert_eq!(main.height, 20);
         assert_eq!(status.height, 1);
         assert_eq!(now.map(|r| r.height), Some(3));
+    }
+
+    // ---------------------------------------------------------------- art
+
+    use crate::config::Settings;
+    use crate::player::NullPlayer;
+    use crate::render::ArtProtocol;
+    use crate::subsonic::{Album, SubsonicClient, SubsonicConfig};
+    use std::path::PathBuf;
+
+    fn test_app(protocol: ArtProtocol) -> App {
+        let client = SubsonicClient::new(SubsonicConfig {
+            server: "https://demo.navidrome.org".into(),
+            username: "demo".into(),
+            password: "demo".into(),
+        });
+        let settings = Settings {
+            server: "https://demo.navidrome.org".into(),
+            username: "demo".into(),
+            password: "demo".into(),
+            scrobble: false,
+            auto_dj: false,
+            art_mode: "sixel".into(),
+            thumb_colors: 16,
+            cover_colors: 240,
+            cache_dir: PathBuf::from("/tmp/undertone-ui-test"),
+            cache_bytes: 1024 * 1024,
+            mpv_binary: PathBuf::from("mpv"),
+            transcode: false,
+        };
+        // No image source: placements are computed but no blobs ever arrive,
+        // which is exactly what we want to test layout, not rendering.
+        let art = crate::art::ArtService::from_settings(
+            protocol,
+            &settings.cache_dir,
+            settings.cache_bytes,
+            None,
+        )
+        .expect("art service");
+        App::new(
+            client,
+            settings,
+            Box::new(NullPlayer::new()),
+            art,
+            protocol,
+            70,
+        )
+    }
+
+    fn album_with_cover(id: &str) -> Album {
+        Album {
+            id: id.to_string(),
+            name: format!("album {id}"),
+            cover_art: Some(format!("al-{id}_cover")),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn switching_views_erases_previously_painted_art() {
+        let mut app = test_app(ArtProtocol::Sixel);
+        app.albums = vec![album_with_cover("a"), album_with_cover("b")];
+        let area = Rect::new(0, 0, 100, 30);
+
+        collect_placements(&mut app, area);
+        let first = app.painter.plan(&app.placements);
+        assert_eq!(first.paints.len(), 2);
+        assert!(first.erases.is_empty());
+
+        // Opening the queue draws no art, so the two covers underneath must be
+        // erased. Forgetting them (invalidate) leaves sixel pixels on screen.
+        app.view = View::Queue;
+        collect_placements(&mut app, area);
+        let second = app.painter.plan(&app.placements);
+        assert_eq!(second.erases.len(), 2, "stale covers must be erased");
+        assert!(second.paints.is_empty());
+    }
+
+    #[test]
+    fn going_back_to_albums_repaints_the_thumbnails() {
+        let mut app = test_app(ArtProtocol::Sixel);
+        app.albums = vec![album_with_cover("a")];
+        let area = Rect::new(0, 0, 100, 30);
+
+        collect_placements(&mut app, area);
+        app.painter.plan(&app.placements);
+
+        app.view = View::Queue;
+        collect_placements(&mut app, area);
+        app.painter.plan(&app.placements);
+
+        app.view = View::Albums;
+        collect_placements(&mut app, area);
+        let plan = app.painter.plan(&app.placements);
+        assert_eq!(plan.paints.len(), 1, "returning must repaint the cover");
+    }
+
+    #[test]
+    fn grid_placements_tile_without_overlapping() {
+        let mut app = test_app(ArtProtocol::Sixel);
+        app.layout = AlbumLayout::Grid;
+        app.albums = (0..12).map(|i| album_with_cover(&i.to_string())).collect();
+        let area = Rect::new(0, 0, 100, 30);
+
+        collect_placements(&mut app, area);
+        assert_eq!(app.placements.len(), 12);
+        for a in &app.placements {
+            assert!(a.col + a.cols <= area.width, "placement must fit the width");
+            assert!(
+                a.row + a.rows <= area.height,
+                "placement must fit the height"
+            );
+        }
+        for (i, a) in app.placements.iter().enumerate() {
+            for b in app.placements.iter().skip(i + 1) {
+                assert!(!a.intersects(b), "{a:?} overlaps {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn symbols_mode_places_no_pixels_at_all() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.albums = vec![album_with_cover("a")];
+        collect_placements(&mut app, Rect::new(0, 0, 100, 30));
+        assert!(app.placements.is_empty());
+        assert!(app.painter.plan(&app.placements).is_empty());
     }
 }

@@ -29,6 +29,22 @@ pub enum View {
     Help,
 }
 
+/// How the album list is laid out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AlbumLayout {
+    #[default]
+    List,
+    /// A wall of covers. Cells are sized so the tile grid stays stable while
+    /// scrolling, which keeps sixel repaints to whole rows.
+    Grid,
+}
+
+/// Grid geometry, in terminal cells.
+pub const GRID_TILE_W: u16 = 12;
+pub const GRID_TILE_H: u16 = 5;
+pub const GRID_THUMB_W: u16 = 10;
+pub const GRID_THUMB_H: u16 = 4;
+
 pub struct NowPlaying {
     pub track: Option<QueueItem>,
     pub position: f64,
@@ -68,6 +84,7 @@ pub struct App {
     pub protocol: ArtProtocol,
 
     pub view: View,
+    pub layout: AlbumLayout,
     pub albums: Vec<Album>,
     pub sort: AlbumListType,
     pub selected: usize,
@@ -108,6 +125,7 @@ impl App {
             protocol,
             settings,
             view: View::Albums,
+            layout: AlbumLayout::List,
             albums: Vec::new(),
             sort: AlbumListType::Random,
             selected: 0,
@@ -432,13 +450,11 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') if key.modifiers.is_empty() => self.should_quit = true,
-            KeyCode::Esc => {
-                if self.view == View::Albums {
-                    self.should_quit = true;
-                } else {
-                    self.view = View::Albums;
-                    self.painter.invalidate();
-                }
+            KeyCode::Esc | KeyCode::Char('h') if self.view != View::Albums => {
+                // Going back must *erase* the previous view's placements, not
+                // forget them: `invalidate` is only for a destroyed screen
+                // (resize), where erasing is meaningless.
+                self.view = View::Albums;
             }
             KeyCode::Char('?') => self.view = View::Help,
             KeyCode::Char('Q') => {
@@ -447,10 +463,12 @@ impl App {
                 } else {
                     View::Queue
                 };
-                self.painter.invalidate();
             }
-            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(-1),
+            KeyCode::Char('w') => self.toggle_layout(),
+            KeyCode::Char('h') if self.view == View::Albums => self.move_horizontal(-1),
+            KeyCode::Char('l') if self.view == View::Albums => self.move_horizontal(1),
+            KeyCode::Char('j') | KeyCode::Down => self.move_vertical(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_vertical(-1),
             KeyCode::Char('g') => self.jump_cursor(0),
             KeyCode::Char('G') => self.jump_cursor(usize::MAX),
             KeyCode::Enter => self.activate(),
@@ -492,13 +510,33 @@ impl App {
         }
     }
 
-    fn move_cursor(&mut self, delta: i32) {
+    fn move_vertical(&mut self, delta: i32) {
         let len = self.cursor_len();
         if len == 0 {
             return;
         }
-        let current = self.cursor() as i32;
-        let next = (current + delta).clamp(0, len as i32 - 1) as usize;
+        // In the grid, one visual row is a whole line of tiles.
+        let step = if self.view == View::Albums && self.layout == AlbumLayout::Grid {
+            self.grid_columns(self.list_area.0).max(1) as i32
+        } else {
+            1
+        };
+        self.shift_selection(delta * step, len);
+    }
+
+    fn move_horizontal(&mut self, delta: i32) {
+        if self.layout == AlbumLayout::List {
+            return;
+        }
+        let len = self.cursor_len();
+        if len == 0 {
+            return;
+        }
+        self.shift_selection(delta, len);
+    }
+
+    fn shift_selection(&mut self, delta: i32, len: usize) {
+        let next = (self.cursor() as i32 + delta).clamp(0, len as i32 - 1) as usize;
         match self.view {
             View::Albums => self.selected = next,
             View::AlbumDetail => self.detail_selected = next,
@@ -550,13 +588,49 @@ impl App {
     }
 
     /// Keep the selection inside the visible window.
-    pub fn ensure_visible(&mut self, visible_rows: usize) {
-        let visible = (visible_rows / ROW_HEIGHT as usize).max(1);
-        if self.selected < self.scroll {
-            self.scroll = self.selected;
-        } else if self.selected >= self.scroll + visible {
-            self.scroll = self.selected + 1 - visible;
+    ///
+    /// In grid mode the window slides by whole rows, so tile positions stay
+    /// fixed relative to the row and scrolling does not repaint everything.
+    pub fn ensure_visible(&mut self, width: u16, height: u16) {
+        match self.layout {
+            AlbumLayout::List => {
+                let visible = (usize::from(height) / usize::from(ROW_HEIGHT)).max(1);
+                if self.selected < self.scroll {
+                    self.scroll = self.selected;
+                } else if self.selected >= self.scroll + visible {
+                    self.scroll = self.selected + 1 - visible;
+                }
+            }
+            AlbumLayout::Grid => {
+                let cols = self.grid_columns(width).max(1);
+                let visible_rows = (usize::from(height) / usize::from(GRID_TILE_H)).max(1);
+                let selected_row = self.selected / cols;
+                let first_row = self.scroll / cols;
+                if selected_row < first_row {
+                    self.scroll = selected_row * cols;
+                } else if selected_row >= first_row + visible_rows {
+                    self.scroll = (selected_row + 1 - visible_rows) * cols;
+                }
+            }
         }
+    }
+
+    /// Tiles per row for the current width.
+    pub fn grid_columns(&self, width: u16) -> usize {
+        (width / GRID_TILE_W).max(1) as usize
+    }
+
+    pub fn toggle_layout(&mut self) {
+        self.layout = match self.layout {
+            AlbumLayout::List => AlbumLayout::Grid,
+            AlbumLayout::Grid => AlbumLayout::List,
+        };
+        self.scroll = 0;
+        let label = match self.layout {
+            AlbumLayout::List => "list",
+            AlbumLayout::Grid => "grid",
+        };
+        self.status(format!("album view: {label}"));
     }
 }
 
@@ -750,12 +824,12 @@ mod tests {
         app.albums = (0..50).map(|i| album(&i.to_string(), 1)).collect();
         app.selected = 30;
         // 24 rows of list area at 2 rows per entry = 12 visible entries.
-        app.ensure_visible(24);
+        app.ensure_visible(100, 24);
         assert!(app.scroll <= app.selected);
         assert!(app.selected < app.scroll + 12);
 
         app.selected = 0;
-        app.ensure_visible(24);
+        app.ensure_visible(100, 24);
         assert_eq!(app.scroll, 0);
     }
 
@@ -766,5 +840,59 @@ mod tests {
         let status = app.status.as_ref().expect("status");
         assert!(status.error);
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn w_toggles_the_album_layout_and_says_so() {
+        let mut app = app();
+        assert_eq!(app.layout, AlbumLayout::List);
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(app.layout, AlbumLayout::Grid);
+        assert_eq!(
+            app.status.as_ref().map(|s| s.text.as_str()),
+            Some("album view: grid")
+        );
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(app.layout, AlbumLayout::List);
+        assert_eq!(
+            app.status.as_ref().map(|s| s.text.as_str()),
+            Some("album view: list")
+        );
+    }
+
+    #[test]
+    fn grid_navigation_moves_by_rows_and_cells() {
+        let mut app = app();
+        app.layout = AlbumLayout::Grid;
+        app.list_area = (100, 30);
+        app.albums = (0..40).map(|i| album(&i.to_string(), 1)).collect();
+        let cols = app.grid_columns(100);
+        assert!(cols > 1);
+
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.selected, cols, "j moves one tile row");
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.selected, 0);
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.selected, 1, "l moves one tile");
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn h_is_back_on_sub_views_but_moves_in_the_grid() {
+        let mut app = app();
+        app.albums = (0..10).map(|i| album(&i.to_string(), 1)).collect();
+        app.list_area = (100, 30);
+
+        // On the top-level view it moves the cursor, it does not quit or go back.
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.view, View::Albums);
+        assert!(!app.should_quit);
+
+        // Inside a sub-view it goes back.
+        app.view = View::AlbumDetail;
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.view, View::Albums);
     }
 }
