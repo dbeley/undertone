@@ -13,6 +13,11 @@ pub struct BlobCache {
     root: PathBuf,
     capacity_bytes: u64,
     used_bytes: u64,
+    /// Most recently written key. Eviction never reclaims it: filesystem
+    /// timestamps have coarse granularity, so a blob written microseconds ago
+    /// can look exactly as old as its neighbours, and dropping the entry the
+    /// caller is about to display is the one eviction we must not make.
+    newest_key: Option<String>,
 }
 
 impl BlobCache {
@@ -24,6 +29,7 @@ impl BlobCache {
             root,
             capacity_bytes,
             used_bytes: 0,
+            newest_key: None,
         };
         cache.used_bytes = cache.scan_used_bytes()?;
         Ok(cache)
@@ -74,6 +80,7 @@ impl BlobCache {
         fs::rename(&temp_path, &final_path)?;
 
         self.used_bytes = self.used_bytes.saturating_sub(previous) + blob.len() as u64;
+        self.newest_key = Some(key.to_string());
         self.evict_to_capacity()?;
         Ok(())
     }
@@ -87,9 +94,13 @@ impl BlobCache {
         // Oldest first.
         entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
+        let protected = self.newest_key.as_deref().map(|key| self.path_for(key));
         for (path, _) in entries {
             if self.used_bytes <= self.capacity_bytes {
                 break;
+            }
+            if protected.as_deref() == Some(path.as_path()) {
+                continue;
             }
             let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             if fs::remove_file(&path).is_ok() {
@@ -105,6 +116,7 @@ impl BlobCache {
             let _ = fs::remove_file(path);
         }
         self.used_bytes = 0;
+        self.newest_key = None;
         Ok(())
     }
 
@@ -246,6 +258,38 @@ mod tests {
         cache.put("huge", &[2u8; 90]).unwrap();
         assert!(cache.contains("huge"));
         assert!(cache.used_bytes() <= 100);
+    }
+
+    #[test]
+    fn the_newest_blob_survives_even_when_timestamps_tie() {
+        // Filesystem timestamps are coarse enough that two writes can land in
+        // the same tick, at which point sorting by mtime makes the order
+        // arbitrary. The entry just written is the one the caller is about to
+        // paint, so it must never be the victim.
+        let mut cache = BlobCache::new(temp_root("tiebreak"), 100).unwrap();
+        for i in 0..20 {
+            let key = format!("k{i:02}");
+            cache.put(&key, &[7u8; 60]).unwrap();
+            assert!(
+                cache.contains(&key),
+                "{key} was evicted right after being written"
+            );
+            assert!(cache.used_bytes() <= 100, "over budget after {key}");
+        }
+    }
+
+    #[test]
+    fn a_blob_larger_than_the_budget_is_kept_rather_than_thrown_away() {
+        // Better to exceed the budget until the next write than to discard a
+        // blob we just spent a fetch and a chafa run producing.
+        let mut cache = BlobCache::new(temp_root("overbudget"), 100).unwrap();
+        cache.put("enormous", &[3u8; 400]).unwrap();
+        assert!(cache.contains("enormous"));
+        assert_eq!(cache.used_bytes(), 400);
+
+        // The next write reclaims it.
+        cache.put("next", &[4u8; 10]).unwrap();
+        assert!(!cache.contains("enormous"));
     }
 
     #[test]
