@@ -1,18 +1,196 @@
 //! Undertone — a Subsonic/Navidrome client for very weak Linux hardware.
 
+use std::io::Write;
+use std::sync::Arc;
+use std::time::Duration;
+
 use clap::Parser;
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
+use ratatui::Terminal;
+
+use undertone::app::App;
+use undertone::art::{ArtService, SubsonicImageSource};
 use undertone::cli;
+use undertone::config::{CliOverrides, Config, Settings};
+use undertone::event::{Events, Input};
+use undertone::player::{MpvOptions, MpvPlayer, NullPlayer, Player};
+use undertone::render::{ArtProtocol, Caps, CellSize, ImageSource};
+use undertone::subsonic::{SubsonicClient, SubsonicConfig};
+use undertone::ui;
+
+/// Event poll interval. Fast enough that art appears promptly; the app only
+/// redraws when something actually changed.
+const TICK: Duration = Duration::from_millis(250);
 
 fn main() {
     let args = cli::Args::parse();
-    if args.version {
-        println!("undertone {}", env!("CARGO_PKG_VERSION"));
-        return;
+    if let Err(err) = run(args) {
+        eprintln!("undertone: {err}");
+        std::process::exit(1);
     }
-    println!(
-        "undertone {} — early development (server: {}, art: {})",
-        env!("CARGO_PKG_VERSION"),
-        args.server.as_deref().unwrap_or("<from config>"),
-        args.art.as_deref().unwrap_or("auto"),
-    );
+}
+
+fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
+    let env = |key: &str| std::env::var(key).ok();
+
+    let config_path = args.config.as_deref().map(std::path::Path::new);
+    let (config, loaded) = Config::load(config_path, &env)?;
+    let settings = config.resolve(
+        CliOverrides {
+            server: args.server.clone(),
+            username: args.username.clone(),
+            art: args.art.clone(),
+        },
+        &env,
+    )?;
+
+    let client = SubsonicClient::new(SubsonicConfig {
+        server: settings.server.clone(),
+        username: settings.username.clone(),
+        password: settings.password.clone(),
+    });
+
+    let server_info = client
+        .ping()
+        .map_err(|err| format!("cannot reach {}: {err}", settings.server))?;
+
+    let protocol = resolve_protocol(&args, &settings);
+    let caps = Caps {
+        protocol,
+        cell: CellSize::detect(),
+        truecolor: std::env::var("COLORTERM")
+            .map(|value| value.contains("truecolor") || value.contains("24bit"))
+            .unwrap_or(false),
+    };
+
+    let source: Option<Arc<dyn ImageSource>> = if protocol.is_pixel() {
+        // Ask the server for pre-scaled art so the weak device never decodes
+        // a full-size image.
+        Some(Arc::new(SubsonicImageSource::new(client.clone(), 300)))
+    } else {
+        None
+    };
+    let art =
+        ArtService::from_settings(protocol, &settings.cache_dir, settings.cache_bytes, source)?;
+
+    let player: Box<dyn Player> = if args.player == "null" {
+        Box::new(NullPlayer::new())
+    } else {
+        Box::new(MpvPlayer::spawn(&MpvOptions {
+            binary: settings.mpv_binary.clone(),
+            ..Default::default()
+        })?)
+    };
+
+    let mut app = App::new(client, settings, player, art, protocol, 70);
+    app.status(format!(
+        "{} {} · art {} · cell {}x{}",
+        server_info.server_type.as_deref().unwrap_or("subsonic"),
+        server_info.version,
+        protocol.label(),
+        caps.cell.width,
+        caps.cell.height
+    ));
+    app.load_albums();
+
+    if let Some(path) = loaded {
+        app.status(format!("config: {}", path.display()));
+    }
+
+    let mut terminal = setup_terminal()?;
+    let result = event_loop(&mut terminal, &mut app);
+    restore_terminal(&mut terminal)?;
+    app.art.shutdown();
+    result
+}
+
+fn resolve_protocol(args: &cli::Args, settings: &Settings) -> ArtProtocol {
+    if args.no_art {
+        return ArtProtocol::Off;
+    }
+    if let Some(mode) = args.art.as_deref().and_then(ArtProtocol::parse) {
+        return mode;
+    }
+    if let Some(mode) = ArtProtocol::parse(&settings.art_mode) {
+        return mode;
+    }
+    Caps::detect(None).protocol
+}
+
+fn setup_terminal() -> Result<ui::Term, Box<dyn std::error::Error>> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+
+    // Restore the terminal even if we panic, or the shell comes back broken.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        previous_hook(info);
+    }));
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    Ok(terminal)
+}
+
+fn restore_terminal(terminal: &mut ui::Term) -> Result<(), Box<dyn std::error::Error>> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    terminal.backend_mut().flush()?;
+    Ok(())
+}
+
+fn event_loop(terminal: &mut ui::Term, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    let events = Events::spawn(TICK);
+
+    loop {
+        match events.next() {
+            Some(Input::Key(key)) => app.handle_key(key),
+            Some(Input::Resize) => {
+                // Placements are invalid after a resize.
+                app.painter.invalidate();
+                app.needs_redraw = true;
+            }
+            Some(Input::Tick) => app.tick(),
+            None => break,
+        }
+
+        app.pump();
+
+        if app.should_quit {
+            break;
+        }
+
+        let art_pending = app.art.pending() > 0;
+        if !app.needs_redraw && !art_pending {
+            continue;
+        }
+        app.needs_redraw = false;
+
+        let size = terminal.size()?;
+        // A zero-sized terminal (early resize, odd pty) would panic ratatui.
+        if size.width == 0 || size.height == 0 {
+            continue;
+        }
+        let area = Rect::new(0, 0, size.width, size.height);
+
+        ui::collect_placements(app, area);
+        let plan = app.painter.plan(&app.placements);
+
+        // Order matters: erase, draw text, then paint images over it.
+        ui::emit_erases(terminal, &plan)?;
+        terminal.draw(|frame| ui::draw(frame, app))?;
+        ui::emit_paints(terminal, &plan, &app.art)?;
+    }
+
+    Ok(())
 }

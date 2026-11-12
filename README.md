@@ -76,12 +76,24 @@ thumb_colors = 16
 mpv = "mpv"
 ```
 
+## Keys
+
+```
+j / k      move            Enter   open album · play track
+g / G      first / last    Space   play / pause
+> / <      next / prev     f / b   seek ±10s
+s / r      shuffle/repeat  +/-     volume      m  mute
+Q          queue           ?       help        Esc back
+S / R      change sort / reload    q   quit
+```
+
 ## Development
 
 ```bash
 nix develop
 cargo build
 cargo test
+cargo run -- --player=null --art=off   # no audio, no images
 ```
 
 ## Licence

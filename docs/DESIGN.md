@@ -10,7 +10,7 @@
 
 ## Status
 
-Phases 0–3 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache, player trait, mpv IPC, queue, scrobbler, render pipeline). Verified live against Navidrome 0.64.2, with real mpv 0.42 through a null sink, and with real chafa 1.18 output fixtures. Phases 4–6 outstanding — there is no UI yet. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
+Phases 0–4 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache, player trait, mpv IPC, queue, scrobbler, render pipeline, and a runnable TUI). Verified live against Navidrome 0.64.2, with real mpv 0.42 through a null sink, with real chafa 1.18 output fixtures, and by running the TUI itself in a 100x30 pty. Phase 5 (discovery pane, Auto DJ, Listen Later, session restore) and Phase 6 (perf harness, error paths, docs) outstanding. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
 
 ---
 

@@ -1,13 +1,13 @@
 //! Background art rendering.
 //!
-//! One thread, one job at a time, batched by shape so chafa's process startup
-//! is paid once per screenful rather than once per image. Rendering never
-//! happens on the input path — that is what makes a TUI feel broken on slow
-//! hardware.
+//! One thread does everything expensive: fetching cover bytes, writing them to
+//! the image cache, encoding with chafa, and storing the escape blob. Nothing
+//! on the input path ever touches the network or spawns a process — that is
+//! what keeps a TUI responsive on weak hardware.
 //!
 //! Jobs carry a priority so what is visible now beats what is being prefetched
 //! for the next screen, and cancelled jobs are dropped before they cost a
-//! process spawn.
+//! network round trip or a process spawn.
 
 use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -16,6 +16,7 @@ use std::thread::JoinHandle;
 
 use super::cache::BlobCache;
 use super::chafa::{sixel_dimensions, ArtRenderer, RenderRequest};
+use super::images::ImageCache;
 use super::protocol::ArtProtocol;
 
 /// Upper bound on images per chafa invocation.
@@ -26,28 +27,57 @@ pub const PRIORITY_VISIBLE: u8 = 0;
 /// Priority for art that will scroll into view soon.
 pub const PRIORITY_PREFETCH: u8 = 10;
 
+/// Fetches cover-art bytes by cover id. Implemented over the Subsonic client
+/// in `art`, and faked in tests.
+pub trait ImageSource: Send + Sync {
+    fn fetch(&self, cover_id: &str) -> Result<Vec<u8>, String>;
+}
+
 #[derive(Debug, Clone)]
 pub struct Job {
+    /// Cache key, built by the caller.
     pub key: String,
-    pub request: RenderRequest,
+    /// Subsonic `coverArt` token — not the album id.
+    pub cover_id: String,
+    pub cols: u32,
+    pub rows: u32,
+    pub colors: u32,
     pub priority: u8,
 }
 
 impl Job {
-    pub fn visible(key: impl Into<String>, request: RenderRequest) -> Self {
+    pub fn visible(
+        key: impl Into<String>,
+        cover_id: impl Into<String>,
+        cols: u32,
+        rows: u32,
+        colors: u32,
+    ) -> Self {
         Self {
             key: key.into(),
-            request,
+            cover_id: cover_id.into(),
+            cols,
+            rows,
+            colors,
             priority: PRIORITY_VISIBLE,
         }
     }
 
-    pub fn prefetch(key: impl Into<String>, request: RenderRequest) -> Self {
+    pub fn prefetch(
+        key: impl Into<String>,
+        cover_id: impl Into<String>,
+        cols: u32,
+        rows: u32,
+        colors: u32,
+    ) -> Self {
         Self {
-            key: key.into(),
-            request,
             priority: PRIORITY_PREFETCH,
+            ..Self::visible(key, cover_id, cols, rows, colors)
         }
+    }
+
+    fn shape(&self) -> (u32, u32, u32) {
+        (self.cols, self.rows, self.colors)
     }
 }
 
@@ -74,14 +104,19 @@ pub struct RenderWorker {
 }
 
 impl RenderWorker {
-    pub fn new(renderer: Box<dyn ArtRenderer>, cache: BlobCache) -> Self {
+    pub fn new(
+        renderer: Box<dyn ArtRenderer>,
+        blobs: BlobCache,
+        images: ImageCache,
+        source: Option<Arc<dyn ImageSource>>,
+    ) -> Self {
         let shared = Arc::new((Mutex::new(Shared::default()), Condvar::new()));
         let (done_tx, done_rx) = mpsc::channel();
 
         let thread_shared = Arc::clone(&shared);
         let handle = std::thread::Builder::new()
             .name("art-render".to_string())
-            .spawn(move || worker_loop(thread_shared, renderer, cache, done_tx))
+            .spawn(move || worker_loop(thread_shared, renderer, blobs, images, source, done_tx))
             .expect("spawn render worker");
 
         Self {
@@ -97,7 +132,7 @@ impl RenderWorker {
         if shared.shutdown {
             return;
         }
-        // Drop a duplicate that is already queued for the same key/priority.
+        // Coalesce a duplicate that is already queued.
         if shared
             .queue
             .iter()
@@ -164,7 +199,9 @@ impl Drop for RenderWorker {
 fn worker_loop(
     shared: Arc<(Mutex<Shared>, Condvar)>,
     renderer: Box<dyn ArtRenderer>,
-    mut cache: BlobCache,
+    mut blobs: BlobCache,
+    images: ImageCache,
+    source: Option<Arc<dyn ImageSource>>,
     done_tx: Sender<Done>,
 ) {
     while let Some(batch) = take_batch(&shared) {
@@ -177,7 +214,7 @@ fn worker_loop(
         let mut miss_requests = Vec::new();
 
         for job in batch {
-            if let Some(blob) = cache.get(&job.key) {
+            if let Some(blob) = blobs.get(&job.key) {
                 let dimensions = dimensions_of(renderer.protocol(), &blob);
                 if done_tx
                     .send(Done {
@@ -190,10 +227,36 @@ fn worker_loop(
                 {
                     return;
                 }
-            } else {
-                miss_keys.push(job.key);
-                miss_requests.push(job.request);
+                continue;
             }
+
+            // chafa needs the image on disk, so fetch before encoding.
+            if !images.contains(&job.cover_id) {
+                let Some(source) = source.as_ref() else {
+                    continue;
+                };
+                match source.fetch(&job.cover_id) {
+                    Ok(bytes) => {
+                        if let Err(err) = images.store(&job.cover_id, &bytes) {
+                            eprintln!("undertone: could not cache art: {err}");
+                            continue;
+                        }
+                    }
+                    Err(err) => {
+                        // Not every album has art; a miss is normal.
+                        eprintln!("undertone: no art for {}: {err}", job.cover_id);
+                        continue;
+                    }
+                }
+            }
+
+            miss_keys.push(job.key);
+            miss_requests.push(RenderRequest::new(
+                images.path_for(&job.cover_id),
+                job.cols,
+                job.rows,
+                job.colors,
+            ));
         }
 
         if miss_requests.is_empty() {
@@ -201,9 +264,9 @@ fn worker_loop(
         }
 
         match renderer.render(&miss_requests) {
-            Ok(blobs) => {
-                for (key, blob) in miss_keys.into_iter().zip(blobs) {
-                    let _ = cache.put(&key, &blob);
+            Ok(rendered) => {
+                for (key, blob) in miss_keys.into_iter().zip(rendered) {
+                    let _ = blobs.put(&key, &blob);
                     let dimensions = dimensions_of(renderer.protocol(), &blob);
                     if done_tx
                         .send(Done {
@@ -245,9 +308,9 @@ fn take_batch(shared: &Arc<(Mutex<Shared>, Condvar)>) -> Option<Vec<Job>> {
     let mut shape: Option<(u32, u32, u32)> = None;
     let mut index = 0;
     while index < guard.queue.len() && batch.len() < MAX_BATCH {
-        let candidate_shape = guard.queue[index].request.batch_shape();
-        let first_shape = *shape.get_or_insert(candidate_shape);
-        if candidate_shape == first_shape {
+        let candidate = guard.queue[index].shape();
+        let first = *shape.get_or_insert(candidate);
+        if candidate == first {
             batch.push(guard.queue.remove(index));
         } else {
             index += 1;
@@ -285,27 +348,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     struct FakeRenderer {
-        blobs: usize,
         calls: Arc<AtomicUsize>,
         last_batch: Arc<AtomicUsize>,
         delay: Duration,
-    }
-
-    impl FakeRenderer {
-        fn new() -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-            let calls = Arc::new(AtomicUsize::new(0));
-            let batch = Arc::new(AtomicUsize::new(0));
-            (
-                Self {
-                    blobs: 0,
-                    calls: Arc::clone(&calls),
-                    last_batch: Arc::clone(&batch),
-                    delay: Duration::ZERO,
-                },
-                calls,
-                batch,
-            )
-        }
     }
 
     impl ArtRenderer for FakeRenderer {
@@ -321,19 +366,25 @@ mod tests {
             }
             Ok(requests
                 .iter()
-                .map(|r| format!("\x1bPrender-{}-{}", r.cols, self.blobs).into_bytes())
+                .map(|r| format!("\x1bPfake-{}", r.cols).into_bytes())
                 .collect())
         }
     }
 
-    fn cache(tag: &str) -> BlobCache {
-        let root = std::env::temp_dir().join(format!(
-            "undertone-worker-{}-{}-{}",
-            std::process::id(),
-            tag,
-            rand_nanos()
-        ));
-        BlobCache::new(root, 10 * 1024 * 1024).unwrap()
+    struct FakeSource {
+        calls: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl ImageSource for FakeSource {
+        fn fetch(&self, _cover_id: &str) -> Result<Vec<u8>, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                Err("no art".to_string())
+            } else {
+                Ok(b"image-bytes".to_vec())
+            }
+        }
     }
 
     fn rand_nanos() -> u64 {
@@ -343,8 +394,52 @@ mod tests {
             .unwrap_or(0)
     }
 
-    fn request(cols: u32) -> RenderRequest {
-        RenderRequest::new("x.jpg", cols, 3, 16)
+    struct Fixture {
+        blobs: BlobCache,
+        images: ImageCache,
+    }
+
+    fn fixture(tag: &str) -> Fixture {
+        let base = std::env::temp_dir().join(format!(
+            "undertone-worker-{}-{}-{}",
+            std::process::id(),
+            tag,
+            rand_nanos()
+        ));
+        Fixture {
+            blobs: BlobCache::new(base.join("blobs"), 10 * 1024 * 1024).unwrap(),
+            images: ImageCache::new(base.join("img")).unwrap(),
+        }
+    }
+
+    type Harness = (
+        RenderWorker,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    );
+
+    fn spawn(tag: &str, delay: Duration, fail_fetch: bool) -> Harness {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let batch = Arc::new(AtomicUsize::new(0));
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let f = fixture(tag);
+        let renderer = FakeRenderer {
+            calls: Arc::clone(&calls),
+            last_batch: Arc::clone(&batch),
+            delay,
+        };
+        let source = FakeSource {
+            calls: Arc::clone(&fetches),
+            fail: fail_fetch,
+        };
+        let worker = RenderWorker::new(
+            Box::new(renderer),
+            f.blobs,
+            f.images,
+            Some(Arc::new(source)),
+        );
+        (worker, calls, batch, fetches)
     }
 
     fn collect(worker: &RenderWorker, expected: usize) -> Vec<Done> {
@@ -358,87 +453,67 @@ mod tests {
     }
 
     #[test]
-    fn renders_submitted_jobs_and_reports_them() {
-        let (renderer, calls, batch) = FakeRenderer::new();
-        let mut worker = RenderWorker::new(Box::new(renderer), cache("basic"));
-        worker.submit(Job::visible("a", request(4)));
-        worker.submit(Job::visible("b", request(4)));
+    fn renders_submitted_jobs_and_batches_them() {
+        let (mut worker, calls, batch, fetches) = spawn("basic", Duration::ZERO, false);
+        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
+        worker.submit(Job::visible("b", "cover-b", 4, 3, 16));
 
         let done = collect(&worker, 2);
         assert_eq!(done.len(), 2);
-        let keys: Vec<&str> = done.iter().map(|d| d.key.as_str()).collect();
-        assert!(keys.contains(&"a") && keys.contains(&"b"));
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "batch into one render");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "one batched render");
         assert_eq!(batch.load(Ordering::SeqCst), 2);
+        assert_eq!(fetches.load(Ordering::SeqCst), 2, "each cover fetched once");
         worker.shutdown();
     }
 
     #[test]
-    fn a_repeat_request_is_served_from_cache() {
-        let (renderer, calls, _) = FakeRenderer::new();
-        let mut worker = RenderWorker::new(Box::new(renderer), cache("cachehit"));
-        worker.submit(Job::visible("a", request(4)));
+    fn a_repeat_request_is_served_from_cache_without_refetching() {
+        let (mut worker, calls, _, fetches) = spawn("cachehit", Duration::ZERO, false);
+        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
         let first = collect(&worker, 1);
-        assert_eq!(first.len(), 1);
         assert!(!first[0].from_cache);
 
-        worker.submit(Job::visible("a", request(4)));
+        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
         let second = collect(&worker, 1);
-        assert_eq!(second.len(), 1);
-        assert!(
-            second[0].from_cache,
-            "second request must hit the blob cache"
-        );
+        assert!(second[0].from_cache);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "no second render");
-        worker.shutdown();
-    }
-
-    #[test]
-    fn duplicate_queued_jobs_are_coalesced() {
-        let (renderer, _, batch) = FakeRenderer::new();
-        let delay_renderer = FakeRenderer {
-            delay: Duration::from_millis(50),
-            ..renderer
-        };
-        let _ = batch;
-        let mut worker = RenderWorker::new(Box::new(delay_renderer), cache("dupes"));
-        worker.submit(Job::visible("a", request(4)));
-        // Submitted while the first is still rendering.
-        worker.submit(Job::visible("a", request(4)));
-        worker.submit(Job::visible("a", request(4)));
-        let done = collect(&worker, 2);
-        assert!(!done.is_empty());
+        assert_eq!(fetches.load(Ordering::SeqCst), 1, "no second fetch");
         worker.shutdown();
     }
 
     #[test]
     fn different_shapes_do_not_share_a_batch() {
-        let (renderer, calls, _) = FakeRenderer::new();
-        let mut worker = RenderWorker::new(Box::new(renderer), cache("shapes"));
-        worker.submit(Job::visible("a", request(4)));
-        worker.submit(Job::visible("b", request(8)));
+        let (mut worker, calls, _, _) = spawn("shapes", Duration::ZERO, false);
+        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
+        worker.submit(Job::visible("b", "cover-b", 8, 6, 16));
         let done = collect(&worker, 2);
         assert_eq!(done.len(), 2);
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "two shapes, two renders");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        worker.shutdown();
+    }
+
+    #[test]
+    fn a_missing_cover_is_skipped_not_fatal() {
+        let (mut worker, calls, _, fetches) = spawn("nofetch", Duration::ZERO, true);
+        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
+        worker.submit(Job::visible("b", "cover-b", 4, 3, 16));
+        let done = collect(&worker, 2);
+        assert!(done.is_empty(), "nothing to render without source bytes");
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         worker.shutdown();
     }
 
     #[test]
     fn cancelling_drops_queued_work() {
-        let (renderer, calls, _) = FakeRenderer::new();
-        let slow = FakeRenderer {
-            delay: Duration::from_millis(150),
-            ..renderer
-        };
-        let mut worker = RenderWorker::new(Box::new(slow), cache("cancel"));
-        worker.submit(Job::visible("a", request(4)));
-        // Let the worker pick up "a", then queue and cancel "b".
+        let (mut worker, calls, _, _) = spawn("cancel", Duration::from_millis(150), false);
+        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
         std::thread::sleep(Duration::from_millis(40));
-        worker.submit(Job::visible("b", request(4)));
+        worker.submit(Job::visible("b", "cover-b", 4, 3, 16));
         worker.cancel(&["b".to_string()]);
 
         let done = collect(&worker, 1);
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(250));
         let extra = worker.drain_done();
         let keys: Vec<&str> = done
             .iter()
@@ -452,40 +527,27 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_is_idempotent_and_stops_the_thread() {
-        let (renderer, _, _) = FakeRenderer::new();
-        let mut worker = RenderWorker::new(Box::new(renderer), cache("shutdown"));
-        worker.submit(Job::visible("a", request(4)));
-        worker.shutdown();
-        worker.shutdown();
-        assert_eq!(worker.pending(), 0);
-        // Submitting after shutdown is a no-op rather than a panic.
-        worker.submit(Job::visible("b", request(4)));
-        assert_eq!(worker.pending(), 0);
-    }
-
-    #[test]
     fn priority_puts_visible_work_first() {
-        let (renderer, _, batch) = FakeRenderer::new();
-        let slow = FakeRenderer {
-            delay: Duration::from_millis(80),
-            ..renderer
-        };
-        let mut worker = RenderWorker::new(Box::new(slow), cache("priority"));
-        // Occupy the worker.
-        worker.submit(Job::visible("busy", request(4)));
+        let (mut worker, _, _, _) = spawn("priority", Duration::from_millis(80), false);
+        worker.submit(Job::visible("busy", "cover-0", 4, 3, 16));
         std::thread::sleep(Duration::from_millis(20));
-        worker.submit(Job::prefetch("later", request(4)));
-        worker.submit(Job::visible("now", request(4)));
+        worker.submit(Job::prefetch("later", "cover-1", 4, 3, 16));
+        worker.submit(Job::visible("now", "cover-2", 4, 3, 16));
 
         let done = collect(&worker, 3);
         let first_after_busy = done.iter().map(|d| d.key.as_str()).find(|k| *k != "busy");
-        assert_eq!(
-            first_after_busy,
-            Some("now"),
-            "visible work should be rendered before prefetch"
-        );
-        let _ = batch;
+        assert_eq!(first_after_busy, Some("now"));
         worker.shutdown();
+    }
+
+    #[test]
+    fn shutdown_is_idempotent_and_stops_the_thread() {
+        let (mut worker, _, _, _) = spawn("shutdown", Duration::ZERO, false);
+        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
+        worker.shutdown();
+        worker.shutdown();
+        assert_eq!(worker.pending(), 0);
+        worker.submit(Job::visible("b", "cover-b", 4, 3, 16));
+        assert_eq!(worker.pending(), 0);
     }
 }

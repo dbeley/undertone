@@ -80,6 +80,7 @@ struct Envelope {
 }
 
 /// A client bound to one server and one set of credentials.
+#[derive(Clone)]
 pub struct SubsonicClient {
     agent: ureq::Agent,
     config: SubsonicConfig,
