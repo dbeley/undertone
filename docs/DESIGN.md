@@ -10,7 +10,7 @@
 
 ## Status
 
-Phases 0 and 1 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache), verified live against Navidrome 0.64.2. Phases 2–6 outstanding. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
+Phases 0–2 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache, player trait, mpv IPC, queue, scrobbler), verified live against Navidrome 0.64.2 and with real mpv 0.42 playing through a null sink. Phases 3–6 outstanding. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
 
 ---
 

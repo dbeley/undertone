@@ -36,6 +36,16 @@
             CARGO_PROFILE_RELEASE_STRIP = "symbols";
           };
 
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+
+          # mpv and chafa are runtime dependencies, not build inputs: the
+          # binary execs them. Wrapping puts both on PATH so a fresh NixOS
+          # install works without the user installing anything by hand.
+          postInstall = ''
+            wrapProgram $out/bin/undertone \
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.mpv pkgs.chafa ]}
+          '';
+
           # Tests run in CI via `cargo test`, where fixtures and tools exist.
           doCheck = false;
 
