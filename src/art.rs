@@ -233,13 +233,29 @@ mod tests {
     }
 
     #[test]
-    fn requesting_twice_queues_once() {
+    fn requesting_twice_renders_once() {
         let (mut service, calls) = service("once");
         let key = service.request("al-1", 4, 3, 16, false);
         let again = service.request("al-1", 4, 3, 16, false);
         assert_eq!(key, again);
-        assert_eq!(service.pending(), 1);
-        let _ = calls;
+
+        // `pending()` is a queue length, and the worker takes the job off the
+        // queue the instant it can — asserting on it races the thread. The
+        // property that matters is that the key is encoded exactly once.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !service.is_ready(&key) {
+            service.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        service.poll();
+
+        assert!(service.is_ready(&key));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a duplicate request must not render twice"
+        );
         service.shutdown();
     }
 

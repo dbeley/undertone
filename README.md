@@ -79,14 +79,22 @@ mpv = "mpv"
 ## Keys
 
 ```
-j / k      move down / up      h / l   left / right (grid) · h back
+j / k      move down / up      Ctrl-d/u  page down / up
+h / l      left / right (grid) · h back
 w          list / grid toggle  g / G   first / last
-Enter      open album · play track    Space  play / pause
+Enter      open album · play track    p / Space  play / pause
 > / <      next / prev         f / b   seek ±10s
 s / r      shuffle / repeat    +/-     volume      m  mute
 Q          queue               ?       help        Esc back
 S / R      change sort / reload         q   quit
 ```
+
+The album list pages as you scroll: a hundred albums at a time, fetched when
+the cursor gets within a screen of the end, and a short page means the end of
+the list. No count is ever held in memory beyond what you have scrolled past.
+
+The bottom bar shows the playing track with its cover, album, container and
+bitrate, a thin progress rule, and a preview of what plays next.
 
 ## Development
 

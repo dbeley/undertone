@@ -87,6 +87,8 @@ pub struct App {
     pub layout: AlbumLayout,
     pub albums: Vec<Album>,
     pub sort: AlbumListType,
+    /// The server returned a short page, so there is nothing after this.
+    pub albums_exhausted: bool,
     pub selected: usize,
     pub scroll: usize,
     pub detail: Option<Album>,
@@ -131,6 +133,11 @@ impl App {
             layout: AlbumLayout::List,
             albums: Vec::new(),
             sort: AlbumListType::Random,
+            // Nothing has been requested yet, so there is no next page to
+            // fetch. `load_albums` clears this. Defaulting to `true` also
+            // keeps tests that inject albums by hand from making network
+            // calls when their cursor nears the end of the list.
+            albums_exhausted: true,
             selected: 0,
             scroll: 0,
             detail: None,
@@ -168,21 +175,65 @@ impl App {
 
     // ---------------------------------------------------------------- data
 
+    /// Albums requested per page. Navidrome caps `getAlbumList2` at 500; a
+    /// hundred keeps a page under about a second on a slow link while filling
+    /// a screen several times over, so scrolling rarely waits.
+    pub const ALBUM_PAGE: usize = 100;
+
+    /// Albums fetched per scroll. Random order lands here.
     pub fn load_albums(&mut self) {
+        self.albums.clear();
+        self.albums_exhausted = false;
+        self.selected = 0;
+        self.scroll = 0;
+        self.fetch_album_page();
+        self.needs_redraw = true;
+    }
+
+    /// Append the next page. Called when the cursor nears the loaded end.
+    pub fn fetch_album_page(&mut self) {
+        if self.albums_exhausted {
+            return;
+        }
         let query = AlbumListQuery {
             kind: self.sort,
-            size: 100,
-            offset: 0,
+            size: Self::ALBUM_PAGE as u32,
+            offset: self.albums.len() as u32,
             ..Default::default()
         };
         match self.client.album_list(&query) {
-            Ok(albums) => {
-                self.albums = albums;
-                self.selected = 0;
-                self.scroll = 0;
+            Ok(page) => {
+                let returned = page.len();
+                self.albums.extend(page);
+                // A short page is the last one. Some servers return exactly
+                // `size` items and then an empty page; the next fetch handles
+                // that without looping, since an empty page trips this too.
+                if returned < Self::ALBUM_PAGE {
+                    self.albums_exhausted = true;
+                }
                 self.needs_redraw = true;
             }
-            Err(err) => self.error(format!("could not load albums: {err}")),
+            Err(err) => {
+                // Do not retry on every keystroke; the user can press R.
+                self.albums_exhausted = true;
+                self.error(format!("could not load more albums: {err}"));
+            }
+        }
+    }
+
+    /// Fetch ahead when the cursor is within a screen of the end.
+    ///
+    /// Blocking on purpose: one page is a single request, and the alternative
+    /// is a background thread whose results have to be spliced into a list the
+    /// cursor indexes. A brief hitch only when crossing a page boundary beats
+    /// that complexity on hardware this slow.
+    pub fn maybe_load_more(&mut self) {
+        if self.albums_exhausted || self.albums.is_empty() {
+            return;
+        }
+        let lookahead = 25;
+        if self.selected + lookahead >= self.albums.len() {
+            self.fetch_album_page();
         }
     }
 
@@ -233,6 +284,8 @@ impl App {
                 album: song.album.clone(),
                 cover_art: song.cover_art.clone(),
                 duration: song.duration,
+                suffix: song.suffix.clone(),
+                bit_rate: song.bit_rate,
             })
             .collect()
     }
@@ -318,6 +371,42 @@ impl App {
         self.now.paused = !self.now.paused;
         let _ = self.player.pause(self.now.paused);
         self.needs_redraw = true;
+    }
+
+    /// `p` / Space: pause what is playing, otherwise start the queue.
+    ///
+    /// Deliberately does not fall back to opening the selection: `p` means
+    /// play, and silently loading an album because nothing was queued is the
+    /// kind of surprise that makes a player feel unpredictable.
+    pub fn play_or_pause(&mut self) {
+        if self.now.track.is_some() {
+            self.toggle_pause();
+        } else if !self.queue.is_empty() {
+            self.play_current();
+        } else {
+            self.status("nothing to play — Enter on an album first");
+        }
+    }
+
+    /// Move the cursor by a screenful (Ctrl-d / Ctrl-u).
+    fn page(&mut self, direction: i32) {
+        let len = self.cursor_len();
+        if len == 0 {
+            return;
+        }
+        let rows = match (self.view, self.layout) {
+            (View::Albums, AlbumLayout::Grid) => {
+                let cols = self.grid_columns(self.list_area.0).max(1);
+                (usize::from(self.list_area.1) / usize::from(GRID_TILE_H)).max(1) * cols
+            }
+            (View::Albums, AlbumLayout::List) => {
+                (usize::from(self.list_area.1) / usize::from(ROW_HEIGHT)).max(1)
+            }
+            // Detail and queue rows are one line each; leave a row for the
+            // view's own header so the page never overshoots the window.
+            _ => (usize::from(self.list_area.1).saturating_sub(2)).max(1),
+        };
+        self.shift_selection(direction * rows as i32, len);
     }
 
     pub fn next_track(&mut self) {
@@ -457,6 +546,25 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.needs_redraw = true;
 
+        // Ctrl-d / Ctrl-u arrive as Char('d') / Char('u') with CONTROL (0x04
+        // and 0x15). They are the only control keys the UI accepts, and they
+        // have to be handled before the guard below.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+        {
+            match key.code {
+                KeyCode::Char('d') => {
+                    self.page(1);
+                    return;
+                }
+                KeyCode::Char('u') => {
+                    self.page(-1);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // A control byte decodes as a plain char plus a modifier: Ctrl+R is
         // 0x12, which arrives as Char('r') with CONTROL. Without this guard a
         // stray control byte (flow control, a stuck modifier, a terminal
@@ -495,7 +603,7 @@ impl App {
             KeyCode::Char('g') => self.jump_cursor(0),
             KeyCode::Char('G') => self.jump_cursor(usize::MAX),
             KeyCode::Enter => self.activate(),
-            KeyCode::Char(' ') => self.toggle_pause(),
+            KeyCode::Char(' ') | KeyCode::Char('p') => self.play_or_pause(),
             KeyCode::Char('>') | KeyCode::Char('.') => self.next_track(),
             KeyCode::Char('<') | KeyCode::Char(',') => self.previous_track(),
             KeyCode::Char('f') => self.seek(10.0),
@@ -561,7 +669,11 @@ impl App {
     fn shift_selection(&mut self, delta: i32, len: usize) {
         let next = (self.cursor() as i32 + delta).clamp(0, len as i32 - 1) as usize;
         match self.view {
-            View::Albums => self.selected = next,
+            View::Albums => {
+                self.selected = next;
+                // Near the end of what we hold, pull the next page.
+                self.maybe_load_more();
+            }
             View::AlbumDetail => self.detail_selected = next,
             View::Queue => {
                 self.queue.jump_to(next);
@@ -577,7 +689,10 @@ impl App {
         }
         let next = target.min(len - 1);
         match self.view {
-            View::Albums => self.selected = next,
+            View::Albums => {
+                self.selected = next;
+                self.maybe_load_more();
+            }
             View::AlbumDetail => self.detail_selected = next,
             View::Queue => {
                 self.queue.jump_to(next);
@@ -722,6 +837,10 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
     fn album(id: &str, songs: usize) -> Album {
         Album {
             id: id.to_string(),
@@ -763,6 +882,74 @@ mod tests {
         app.handle_key(key(KeyCode::Char('G')));
         assert_eq!(app.selected, 9);
         app.handle_key(key(KeyCode::Char('g')));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn p_toggles_pause_when_something_is_playing() {
+        let mut app = app();
+        app.now.track = Some(crate::queue::QueueItem {
+            id: "s1".into(),
+            title: "a track".into(),
+            ..Default::default()
+        });
+        app.now.paused = false;
+
+        app.handle_key(key(KeyCode::Char('p')));
+        assert!(app.now.paused, "p should pause a playing track");
+
+        app.handle_key(key(KeyCode::Char('p')));
+        assert!(!app.now.paused, "p should resume a paused track");
+    }
+
+    #[test]
+    fn p_with_nothing_queued_says_so_instead_of_guessing() {
+        let mut app = app();
+        app.albums = vec![album("a", 2)];
+        app.handle_key(key(KeyCode::Char('p')));
+        assert!(app.queue.is_empty(), "p must not queue anything by itself");
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("nothing to play"), "{}", status.text);
+    }
+
+    #[test]
+    fn ctrl_d_and_ctrl_u_page_by_a_screenful() {
+        let mut app = app();
+        app.albums = (0..60).map(|i| album(&i.to_string(), 1)).collect();
+        // 20 rows at ROW_HEIGHT 2 is ten albums per page.
+        app.list_area = (100, 20);
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+        assert_eq!(app.selected, 10);
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+        assert_eq!(app.selected, 20);
+
+        app.handle_key(ctrl(KeyCode::Char('u')));
+        assert_eq!(app.selected, 10);
+
+        // Clamped at the top rather than underflowing.
+        app.handle_key(ctrl(KeyCode::Char('u')));
+        app.handle_key(ctrl(KeyCode::Char('u')));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn ctrl_d_in_grid_pages_by_whole_rows() {
+        let mut app = app();
+        app.albums = (0..60).map(|i| album(&i.to_string(), 1)).collect();
+        app.layout = AlbumLayout::Grid;
+        // 96 wide is eight 12-cell tiles; 25 rows is five 5-row tile rows.
+        app.list_area = (96, 25);
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+        assert_eq!(app.selected, 40, "one page is five rows of eight");
+    }
+
+    #[test]
+    fn paging_stays_put_with_no_items() {
+        let mut app = app();
+        app.handle_key(ctrl(KeyCode::Char('d')));
         assert_eq!(app.selected, 0);
     }
 

@@ -43,6 +43,27 @@ pub struct QueueItem {
     pub album: Option<String>,
     pub cover_art: Option<String>,
     pub duration: Option<u32>,
+    /// Container extension as the server reports it (`flac`, `mp3`, …).
+    pub suffix: Option<String>,
+    /// Source bitrate in kbit/s, straight from the server's tag scan.
+    pub bit_rate: Option<u32>,
+}
+
+impl QueueItem {
+    /// `flac 1044 kbps`, or whichever half of that the server provided.
+    pub fn format_label(&self) -> Option<String> {
+        let suffix = self
+            .suffix
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_uppercase);
+        match (suffix, self.bit_rate.filter(|rate| *rate > 0)) {
+            (Some(suffix), Some(rate)) => Some(format!("{suffix} {rate} kbps")),
+            (Some(suffix), None) => Some(suffix),
+            (None, Some(rate)) => Some(format!("{rate} kbps")),
+            (None, None) => None,
+        }
+    }
 }
 
 /// Result of moving through the queue.
@@ -133,6 +154,19 @@ impl Queue {
     pub fn current_item_index(&self) -> Option<usize> {
         let pos = self.pos?;
         self.order.get(pos).copied()
+    }
+
+    /// The next `limit` tracks in playback order, for the now-playing bar.
+    ///
+    /// Does not wrap: with nothing left to play the caller shows nothing,
+    /// which is more honest than repeating the list in a one-line preview.
+    pub fn upcoming(&self, limit: usize) -> Vec<&QueueItem> {
+        let items = self.playback_items();
+        let start = match self.pos {
+            Some(pos) => pos + 1,
+            None => 0,
+        };
+        items.into_iter().skip(start).take(limit).collect()
     }
 
     /// Replace the queue and start at the first track.
@@ -554,5 +588,51 @@ mod tests {
         assert_eq!(current_id(&queue), Some(current.as_str()));
         assert_eq!(queue.len(), 200);
         assert_permutation(&queue);
+    }
+
+    #[test]
+    fn upcoming_lists_what_follows_the_current_track() {
+        let mut queue = queue_of(&["a", "b", "c", "d"]);
+        let upcoming: Vec<&str> = queue
+            .upcoming(3)
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(upcoming, vec!["b", "c", "d"]);
+
+        queue.advance();
+        let upcoming: Vec<&str> = queue
+            .upcoming(3)
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(upcoming, vec!["c", "d"]);
+    }
+
+    #[test]
+    fn upcoming_on_the_last_track_is_empty_rather_than_wrapping() {
+        let mut queue = queue_of(&["a", "b"]);
+        queue.advance();
+        assert!(queue.upcoming(3).is_empty());
+    }
+
+    #[test]
+    fn format_label_combines_what_the_server_actually_reports() {
+        let mut item = item("a");
+        assert_eq!(item.format_label(), None);
+
+        item.suffix = Some("flac".into());
+        assert_eq!(item.format_label().as_deref(), Some("FLAC"));
+
+        item.bit_rate = Some(1044);
+        assert_eq!(item.format_label().as_deref(), Some("FLAC 1044 kbps"));
+
+        // A zero bitrate is how some servers report "unknown"; do not print it.
+        item.bit_rate = Some(0);
+        assert_eq!(item.format_label().as_deref(), Some("FLAC"));
+
+        item.suffix = Some(String::new());
+        item.bit_rate = Some(320);
+        assert_eq!(item.format_label().as_deref(), Some("320 kbps"));
     }
 }

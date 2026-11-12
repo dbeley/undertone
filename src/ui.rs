@@ -10,10 +10,10 @@ use std::io::{self, Stdout, Write};
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
@@ -37,9 +37,13 @@ fn selected_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD).fg(ACCENT)
 }
 
+/// Rows the now-playing bar occupies, top border included: title/meta beside
+/// the cover, a thin progress line, then the queue preview.
+pub const NOW_PLAYING_HEIGHT: u16 = 5;
+
 /// Split the screen into [main, status, now-playing].
 fn shell_layout(area: Rect, has_track: bool) -> (Rect, Rect, Option<Rect>) {
-    let bars = if has_track { 4 } else { 1 };
+    let bars = if has_track { 1 + NOW_PLAYING_HEIGHT } else { 1 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(bars)])
@@ -47,7 +51,10 @@ fn shell_layout(area: Rect, has_track: bool) -> (Rect, Rect, Option<Rect>) {
     if has_track {
         let bottom = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(3)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(NOW_PLAYING_HEIGHT),
+            ])
             .split(chunks[1]);
         (chunks[0], bottom[0], Some(bottom[1]))
     } else {
@@ -57,6 +64,24 @@ fn shell_layout(area: Rect, has_track: bool) -> (Rect, Rect, Option<Rect>) {
 
 fn visible_albums(area: Rect) -> usize {
     (area.height / ROW_HEIGHT).max(1) as usize
+}
+
+/// The bar's content area, below its top border.
+fn now_playing_inner(area: Rect) -> Rect {
+    Block::default().borders(Borders::TOP).inner(area)
+}
+
+/// Where the cover sits inside the bar.
+///
+/// List-thumbnail sized on purpose: the same shape as a list cover means the
+/// rendered blob is already in the cache, so the bar costs no extra encoding.
+fn now_playing_cover_rect(inner: Rect) -> Rect {
+    Rect {
+        x: inner.x,
+        y: inner.y,
+        width: THUMB_CELLS.min(inner.width / 2),
+        height: THUMB_ROWS.min(inner.height.saturating_sub(1)),
+    }
 }
 
 fn album_row_rect(area: Rect, index_in_view: usize) -> Rect {
@@ -77,7 +102,7 @@ pub fn collect_placements(app: &mut App, area: Rect) {
         return;
     }
 
-    let (main, _, _) = shell_layout(area, app.now.track.is_some());
+    let (main, _, now) = shell_layout(area, app.now.track.is_some());
     app.list_area = (main.width, main.height);
 
     match app.view {
@@ -160,6 +185,34 @@ pub fn collect_placements(app: &mut App, area: Rect) {
             }
         }
         View::Queue | View::Help => {}
+    }
+
+    // The now-playing cover lives in the bottom bar and is drawn under every
+    // view, so it is the last placement added rather than a per-view concern.
+    if let Some(now_area) = now {
+        if let Some(track) = app.now.track.as_ref() {
+            if let Some(cover) = track.cover_art.as_deref() {
+                let rect = now_playing_cover_rect(now_playing_inner(now_area));
+                if rect.width > 0 && rect.height > 0 {
+                    let key = app.art.request(
+                        cover,
+                        u32::from(rect.width),
+                        u32::from(rect.height),
+                        app.settings.thumb_colors,
+                        false,
+                    );
+                    if app.art.is_ready(&key) {
+                        app.placements.push(Placement::new(
+                            key,
+                            rect.y,
+                            rect.x,
+                            rect.height,
+                            rect.width,
+                        ));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -512,11 +565,12 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("Undertone", title_style())),
         Line::from(""),
         Line::from("j / k      move down / up"),
+        Line::from("Ctrl-d/u   half-page down / up"),
         Line::from("h / l      move left / right (grid) · h back"),
         Line::from("w          toggle list / grid"),
         Line::from("g / G      first / last"),
         Line::from("Enter      open album · play track"),
-        Line::from("Space      play / pause"),
+        Line::from("p / Space  play / pause"),
         Line::from("> / <      next / previous track"),
         Line::from("f / b      seek forward / back 10s"),
         Line::from("s / r      shuffle / repeat"),
@@ -580,51 +634,175 @@ fn draw_now_playing(frame: &mut Frame, app: &App, area: Rect) {
     let Some(track) = app.now.track.as_ref() else {
         return;
     };
+    if inner.width < 12 || inner.height < 3 {
+        return;
+    }
 
-    let state = if app.now.paused { "paused" } else { "playing" };
+    // Left: the cover, four cells wide and two rows tall — the same shape as a
+    // list thumbnail, so its rendered blob is already cached.
+    let cover_rect = now_playing_cover_rect(inner);
+    let cover_w = cover_rect.width;
+    if !app.protocol.is_pixel() || track.cover_art.is_none() {
+        draw_thumb_placeholder(frame, cover_rect, track.cover_art.is_some());
+    } else {
+        for row in cover_rect.y..cover_rect.y + cover_rect.height {
+            for col in cover_rect.x..cover_rect.x + cover_rect.width {
+                frame.buffer_mut()[(col, row)].set_symbol(" ");
+            }
+        }
+    }
+
+    let text_x = cover_rect.x + cover_w + 1;
+    let text_w = inner.x + inner.width - text_x;
+    if text_w < 8 {
+        return;
+    }
+
+    // Title and artist, with the clock pinned to the right of the same row.
+    let clock = format!(
+        "{} / {}",
+        format_duration(app.now.position.round() as u32),
+        format_duration(app.now.duration.round() as u32)
+    );
+    let clock_w = (clock.chars().count() as u16).min(text_w);
+    let title_w = text_w.saturating_sub(clock_w + 1);
+
     let artist = track.artist.clone().unwrap_or_default();
-    let line = Line::from(vec![
+    let mut title = String::new();
+    if !artist.is_empty() {
+        title.push_str(&artist);
+        title.push_str(" — ");
+    }
+    title.push_str(&track.title);
+
+    let title_line = Line::from(vec![
         Span::styled(
             if app.now.paused { "❚❚ " } else { "▶ " },
             Style::default().fg(ACCENT),
         ),
-        Span::styled(track.title.clone(), title_style()),
-        Span::styled(format!(" — {artist}"), Style::default().fg(MUTED)),
         Span::styled(
-            format!(
-                "   {} / {}  {state}",
-                format_duration(app.now.position.round() as u32),
-                format_duration(app.now.duration.round() as u32)
-            ),
-            Style::default().fg(MUTED),
+            truncate_chars(&title, usize::from(title_w).saturating_sub(2)),
+            title_style(),
         ),
     ]);
-    let text_row = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: 1,
-    };
-    frame.render_widget(Paragraph::new(line), text_row);
+    frame.render_widget(
+        Paragraph::new(title_line),
+        Rect {
+            x: text_x,
+            y: inner.y,
+            width: title_w,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(clock, Style::default().fg(MUTED))))
+            .alignment(Alignment::Right),
+        Rect {
+            x: text_x + title_w,
+            y: inner.y,
+            width: clock_w,
+            height: 1,
+        },
+    );
 
+    // Album and format on the second row.
+    let mut meta: Vec<String> = Vec::new();
+    if let Some(album) = track.album.as_deref().filter(|a| !a.is_empty()) {
+        meta.push(album.to_string());
+    }
+    if let Some(format) = track.format_label() {
+        meta.push(format);
+    }
+    if app.now.paused {
+        meta.push("paused".into());
+    }
+    if !meta.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncate_chars(&meta.join(" · "), usize::from(text_w)),
+                Style::default().fg(MUTED),
+            ))),
+            Rect {
+                x: text_x,
+                y: inner.y + 1,
+                width: text_w,
+                height: 1,
+            },
+        );
+    }
+
+    // A thin rule rather than a filled gauge: a single line of glyphs reads as
+    // a progress bar without adding visual weight.
+    let bar_y = inner.y + inner.height - 2;
+    draw_thin_progress(
+        frame,
+        app,
+        Rect {
+            x: inner.x,
+            y: bar_y,
+            width: inner.width,
+            height: 1,
+        },
+    );
+
+    // What plays next.
+    let upcoming = app.queue.upcoming(3);
+    if !upcoming.is_empty() {
+        let joined = upcoming
+            .iter()
+            .map(|item| item.title.clone())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("next  ", Style::default().fg(MUTED)),
+                Span::styled(
+                    truncate_chars(&joined, usize::from(inner.width).saturating_sub(6)),
+                    Style::default(),
+                ),
+            ])),
+            Rect {
+                x: inner.x,
+                y: bar_y + 1,
+                width: inner.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// A one-row progress bar: heavy rule for played, light rule for the rest.
+fn draw_thin_progress(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 {
+        return;
+    }
     let ratio = if app.now.duration > 0.0 {
         (app.now.position / app.now.duration).clamp(0.0, 1.0)
     } else {
         0.0
     };
-    let gauge_area = Rect {
-        x: inner.x,
-        y: inner.y + 1,
-        width: inner.width,
-        height: 1,
-    };
-    frame.render_widget(
-        Gauge::default()
-            .ratio(ratio)
-            .gauge_style(Style::default().fg(ACCENT))
-            .label(""),
-        gauge_area,
-    );
+    let filled = (f64::from(area.width) * ratio).round() as u16;
+    let line = Line::from(vec![
+        Span::styled("━".repeat(usize::from(filled)), Style::default().fg(ACCENT)),
+        Span::styled(
+            "─".repeat(usize::from(area.width - filled)),
+            Style::default().fg(MUTED),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Clamp to `width` characters, with an ellipsis when it had to cut.
+fn truncate_chars(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 pub fn format_duration(seconds: u32) -> String {
@@ -653,9 +831,20 @@ mod tests {
         assert!(now.is_none());
 
         let (main, status, now) = shell_layout(area, true);
-        assert_eq!(main.height, 20);
         assert_eq!(status.height, 1);
-        assert_eq!(now.map(|r| r.height), Some(3));
+        assert_eq!(now.map(|r| r.height), Some(NOW_PLAYING_HEIGHT));
+        // Main keeps everything the bars do not need.
+        assert_eq!(main.height, 24 - 1 - NOW_PLAYING_HEIGHT);
+    }
+
+    #[test]
+    fn the_now_playing_cover_reuses_the_list_thumbnail_shape() {
+        let inner = now_playing_inner(Rect::new(0, 19, 100, NOW_PLAYING_HEIGHT));
+        let cover = now_playing_cover_rect(inner);
+        assert_eq!(cover.width, THUMB_CELLS);
+        assert_eq!(cover.height, THUMB_ROWS);
+        assert_eq!(cover.x, 0);
+        assert_eq!(cover.y, 20);
     }
 
     // ---------------------------------------------------------------- art
