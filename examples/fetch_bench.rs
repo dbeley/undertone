@@ -73,10 +73,8 @@ fn main() {
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
-        for result in results {
-            if let Ok(bytes) = result {
-                concurrent_bytes += bytes.len();
-            }
+        for bytes in results.into_iter().flatten() {
+            concurrent_bytes += bytes.len();
         }
     }
     let concurrent = start.elapsed();
