@@ -81,6 +81,9 @@ impl ChafaRenderer {
             .arg("--colors")
             .arg(request.colors.to_string())
             .arg(&request.source)
+            // Never let chafa inherit the terminal's stdin: a child reading it
+            // would steal keystrokes from the UI.
+            .stdin(std::process::Stdio::null())
             .output()
             .map_err(|err| RenderError::Io(format!("{}: {err}", self.binary.display())))?;
         if !output.status.success() {

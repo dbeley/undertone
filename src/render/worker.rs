@@ -20,7 +20,24 @@ use super::images::ImageCache;
 use super::protocol::ArtProtocol;
 
 /// Upper bound on images per chafa invocation.
-pub const MAX_BATCH: usize = 8;
+///
+/// Kept equal to the fetch concurrency on purpose: a batch is only rendered
+/// once every image in it has arrived, so a large batch means one slow cover
+/// delays the whole screenful. Four keeps chafa spawns cheap while bounding
+/// how long a stall can hold back the first paint.
+pub const MAX_BATCH: usize = 4;
+
+/// Pixels fetched from the server, once per cover.
+///
+/// One size for every view: a detail cover is 20x8 cells = 200x160 px, which
+/// is the largest thing we draw. Fetching per-view sizes meant switching
+/// layouts refetched every cover; one size keeps a single image per album and
+/// lets chafa downscale for the smaller renders.
+pub const IMAGE_PX: u32 = 200;
+
+/// How many covers to fetch at once. Encoding stays single-threaded; network
+/// wait is what benefits from concurrency.
+pub const FETCH_CONCURRENCY: usize = 4;
 
 /// Priority for art the user can see right now.
 pub const PRIORITY_VISIBLE: u8 = 0;
@@ -30,7 +47,8 @@ pub const PRIORITY_PREFETCH: u8 = 10;
 /// Fetches cover-art bytes by cover id. Implemented over the Subsonic client
 /// in `art`, and faked in tests.
 pub trait ImageSource: Send + Sync {
-    fn fetch(&self, cover_id: &str) -> Result<Vec<u8>, String>;
+    /// Fetch cover bytes, pre-scaled to at most `px` pixels on the long edge.
+    fn fetch(&self, cover_id: &str, px: u32) -> Result<Vec<u8>, String>;
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +96,20 @@ impl Job {
 
     fn shape(&self) -> (u32, u32, u32) {
         (self.cols, self.rows, self.colors)
+    }
+
+    /// The image we need, in pixels.
+    ///
+    /// chafa's sixel geometry is a fixed 10x20 px cell, so this is the pixel
+    /// box the encoder fills. One size is cached per cover and reused by every
+    /// view, so changing layout or opening an album costs no refetch.
+    fn px(&self) -> u32 {
+        IMAGE_PX
+    }
+
+    /// Image-cache key: one cached image per cover, independent of view.
+    fn image_key(&self) -> String {
+        self.cover_id.clone()
     }
 }
 
@@ -210,9 +242,8 @@ fn worker_loop(
             continue;
         }
 
-        let mut miss_keys = Vec::new();
-        let mut miss_requests = Vec::new();
-
+        // Serve blob-cache hits immediately; everything else needs work.
+        let mut pending: Vec<Job> = Vec::new();
         for job in batch {
             if let Some(blob) = blobs.get(&job.key) {
                 let dimensions = dimensions_of(renderer.protocol(), &blob);
@@ -229,30 +260,72 @@ fn worker_loop(
                 }
                 continue;
             }
+            pending.push(job);
+        }
+        if pending.is_empty() {
+            continue;
+        }
 
-            // chafa needs the image on disk, so fetch before encoding.
-            if !images.contains(&job.cover_id) {
-                let Some(source) = source.as_ref() else {
+        // Fetch missing images concurrently. Serially fetching one cover at a
+        // time was the bottleneck on a fast machine, not encoding.
+        if let Some(source) = source.as_ref() {
+            let mut to_fetch: Vec<(String, u32)> = Vec::new();
+            for job in &pending {
+                if images.contains(&job.image_key()) {
                     continue;
-                };
-                match source.fetch(&job.cover_id) {
-                    Ok(bytes) => {
-                        if let Err(err) = images.store(&job.cover_id, &bytes) {
-                            eprintln!("undertone: could not cache art: {err}");
-                            continue;
-                        }
-                    }
-                    Err(err) => {
-                        // Not every album has art; a miss is normal.
-                        eprintln!("undertone: no art for {}: {err}", job.cover_id);
-                        continue;
-                    }
+                }
+                let entry = (job.cover_id.clone(), job.px());
+                if !to_fetch.contains(&entry) {
+                    to_fetch.push(entry);
                 }
             }
 
+            for chunk in to_fetch.chunks(FETCH_CONCURRENCY) {
+                let results: Vec<Result<Vec<u8>, String>> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = chunk
+                        .iter()
+                        .map(|(cover, px)| {
+                            let source = source.as_ref();
+                            scope.spawn(move || source.fetch(cover, *px))
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|handle| {
+                            handle
+                                .join()
+                                .unwrap_or_else(|_| Err("fetch thread panicked".into()))
+                        })
+                        .collect()
+                });
+
+                for ((cover, _px), result) in chunk.iter().zip(results) {
+                    match result {
+                        Ok(bytes) => {
+                            // Image key is the cover id: one image per album.
+                            if let Err(_err) = images.store(cover, &bytes) {
+                                // The worker must never write to the terminal:
+                                // stderr during the alternate screen garbles
+                                // the UI. Failures are silent by design.
+                            }
+                        }
+                        // Not every album has art; a miss is normal.
+                        Err(_err) => {}
+                    }
+                }
+            }
+        }
+
+        let mut miss_keys = Vec::new();
+        let mut miss_requests = Vec::new();
+        for job in pending {
+            let image_key = job.image_key();
+            if !images.contains(&image_key) {
+                continue;
+            }
             miss_keys.push(job.key);
             miss_requests.push(RenderRequest::new(
-                images.path_for(&job.cover_id),
+                images.path_for(&image_key),
                 job.cols,
                 job.rows,
                 job.colors,
@@ -281,10 +354,10 @@ fn worker_loop(
                     }
                 }
             }
-            Err(err) => {
+            Err(_err) => {
                 // A failed render is not fatal: the UI shows no art for that
-                // album and everything else keeps working.
-                eprintln!("undertone: art render failed: {err}");
+                // album and everything else keeps working. Never log to stderr
+                // here — the alternate screen owns the terminal.
             }
         }
     }
@@ -377,7 +450,7 @@ mod tests {
     }
 
     impl ImageSource for FakeSource {
-        fn fetch(&self, _cover_id: &str) -> Result<Vec<u8>, String> {
+        fn fetch(&self, _cover_id: &str, _px: u32) -> Result<Vec<u8>, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail {
                 Err("no art".to_string())

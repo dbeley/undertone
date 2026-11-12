@@ -16,19 +16,20 @@ use crate::subsonic::SubsonicClient;
 /// Fetches cover art through the Subsonic client, pre-scaled by the server.
 pub struct SubsonicImageSource {
     client: SubsonicClient,
-    size: u32,
 }
 
 impl SubsonicImageSource {
-    pub fn new(client: SubsonicClient, size: u32) -> Self {
-        Self { client, size }
+    pub fn new(client: SubsonicClient) -> Self {
+        Self { client }
     }
 }
 
 impl ImageSource for SubsonicImageSource {
-    fn fetch(&self, cover_id: &str) -> Result<Vec<u8>, String> {
+    fn fetch(&self, cover_id: &str, px: u32) -> Result<Vec<u8>, String> {
+        // Ask for exactly the size chafa will encode: the server does the
+        // downscaling, so a thumbnail costs a few KB rather than hundreds.
         self.client
-            .cover_art(cover_id, Some(self.size))
+            .cover_art(cover_id, Some(px))
             .map(|(bytes, _content_type)| bytes)
             .map_err(|err| err.to_string())
     }
@@ -149,8 +150,20 @@ impl ArtService {
         self.worker.cancel(keys);
     }
 
+    /// Test-only: pretend a blob has been rendered, so layout tests do not
+    /// need chafa or a network.
+    #[cfg(test)]
+    pub fn force_blob(&mut self, key: &str, blob: Vec<u8>) {
+        self.blobs.insert(key.to_string(), blob);
+    }
+
     pub fn pending(&self) -> usize {
         self.worker.pending()
+    }
+
+    /// How many rendered blobs are held in memory.
+    pub fn ready_count(&self) -> usize {
+        self.blobs.len()
     }
 
     pub fn shutdown(&mut self) {
@@ -185,7 +198,7 @@ mod tests {
 
     struct NoSource;
     impl ImageSource for NoSource {
-        fn fetch(&self, _: &str) -> Result<Vec<u8>, String> {
+        fn fetch(&self, _: &str, _: u32) -> Result<Vec<u8>, String> {
             Ok(b"x".to_vec())
         }
     }
@@ -256,6 +269,30 @@ mod tests {
         let key = service.request("al-1", 4, 3, 16, false);
         assert!(key.contains("symbols"));
         assert_eq!(service.pending(), 0);
+        service.shutdown();
+    }
+
+    #[test]
+    fn many_requests_all_complete_promptly() {
+        // Regression: 14 thumbnails (a screenful) must all arrive, not just
+        // the first batch.
+        let (mut service, calls) = service("many");
+        let keys: Vec<String> = (0..14)
+            .map(|i| service.request(&format!("al-{i}"), 4, 2, 16, false))
+            .collect();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && keys.iter().any(|k| !service.is_ready(k)) {
+            service.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let missing: Vec<&String> = keys.iter().filter(|k| !service.is_ready(k)).collect();
+        assert!(missing.is_empty(), "unfinished: {missing:?}");
+        assert!(
+            calls.load(Ordering::SeqCst) >= 2,
+            "14 images need two batches"
+        );
         service.shutdown();
     }
 }

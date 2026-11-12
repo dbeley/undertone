@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::art::ArtService;
 use crate::config::Settings;
@@ -96,6 +96,9 @@ pub struct App {
     pub status: Option<Status>,
     pub should_quit: bool,
     pub needs_redraw: bool,
+    /// Set when the screen must be cleared, not merely redrawn: erasing a
+    /// sixel by blanking its cells does not remove the pixels.
+    pub needs_clear: bool,
     pub volume: u8,
     pub muted: bool,
 
@@ -136,6 +139,7 @@ impl App {
             status: None,
             should_quit: false,
             needs_redraw: true,
+            needs_clear: false,
             volume,
             muted: false,
             placements: Vec::new(),
@@ -201,9 +205,7 @@ impl App {
             Ok(album) => {
                 self.detail = Some(album);
                 self.detail_selected = 0;
-                self.view = View::AlbumDetail;
-                self.needs_redraw = true;
-                self.painter.invalidate();
+                self.set_view(View::AlbumDetail);
             }
             Err(err) => {
                 self.error(format!("could not open {name}: {err}"));
@@ -440,29 +442,50 @@ impl App {
 
     // ------------------------------------------------------------------ keys
 
+    /// Change view, forcing a screen clear when it actually changes.
+    ///
+    /// Blanking the cells that held a sixel leaves the pixels behind, so any
+    /// movement between views has to clear the screen rather than diff it.
+    pub fn set_view(&mut self, view: View) {
+        if self.view != view {
+            self.view = view;
+            self.needs_clear = true;
+            self.needs_redraw = true;
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.needs_redraw = true;
 
+        // A control byte decodes as a plain char plus a modifier: Ctrl+R is
+        // 0x12, which arrives as Char('r') with CONTROL. Without this guard a
+        // stray control byte (flow control, a stuck modifier, a terminal
+        // feature) silently triggers plain-letter actions.
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return;
+        }
+
         if self.view == View::Help {
-            self.view = View::Albums;
+            self.set_view(View::Albums);
             return;
         }
 
         match key.code {
             KeyCode::Char('q') if key.modifiers.is_empty() => self.should_quit = true,
             KeyCode::Esc | KeyCode::Char('h') if self.view != View::Albums => {
-                // Going back must *erase* the previous view's placements, not
-                // forget them: `invalidate` is only for a destroyed screen
-                // (resize), where erasing is meaningless.
-                self.view = View::Albums;
+                self.set_view(View::Albums);
             }
-            KeyCode::Char('?') => self.view = View::Help,
+            KeyCode::Char('?') => self.set_view(View::Help),
             KeyCode::Char('Q') => {
-                self.view = if self.view == View::Queue {
+                let next = if self.view == View::Queue {
                     View::Albums
                 } else {
                     View::Queue
                 };
+                self.set_view(next);
             }
             KeyCode::Char('w') => self.toggle_layout(),
             KeyCode::Char('h') if self.view == View::Albums => self.move_horizontal(-1),
@@ -626,6 +649,9 @@ impl App {
             AlbumLayout::Grid => AlbumLayout::List,
         };
         self.scroll = 0;
+        // Tiles are painted at different places in each layout, so the old
+        // pixels must go: clear rather than diff.
+        self.needs_clear = true;
         let label = match self.layout {
             AlbumLayout::List => "list",
             AlbumLayout::Grid => "grid",
@@ -894,5 +920,53 @@ mod tests {
         app.view = View::AlbumDetail;
         app.handle_key(key(KeyCode::Char('h')));
         assert_eq!(app.view, View::Albums);
+    }
+
+    #[test]
+    fn changing_view_requests_a_screen_clear() {
+        let mut app = app();
+        app.needs_clear = false;
+        app.handle_key(key(KeyCode::Char('Q')));
+        assert!(app.needs_clear, "view change must clear, not just redraw");
+
+        app.needs_clear = false;
+        app.handle_key(key(KeyCode::Char('Q')));
+        assert!(app.needs_clear, "returning must clear too");
+    }
+
+    #[test]
+    fn toggling_layout_requests_a_screen_clear() {
+        let mut app = app();
+        app.needs_clear = false;
+        app.handle_key(key(KeyCode::Char('w')));
+        assert!(
+            app.needs_clear,
+            "switching list to grid must clear the old thumbnails"
+        );
+    }
+
+    #[test]
+    fn staying_on_a_view_does_not_force_a_clear() {
+        let mut app = app();
+        app.albums = vec![album("a", 1)];
+        app.needs_clear = false;
+        app.handle_key(key(KeyCode::Char('j')));
+        assert!(!app.needs_clear, "scrolling must not clear the screen");
+    }
+
+    #[test]
+    fn control_bytes_do_not_trigger_plain_letter_actions() {
+        let mut app = app();
+        // Ctrl+R is byte 0x12 and decodes as Char('r') with CONTROL. It must
+        // not cycle repeat, or a stray control byte looks like a phantom key.
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(app.queue.repeat(), crate::queue::Repeat::Off);
+
+        for ch in ['s', 'm', 'w', 'q'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
+        }
+        assert!(!app.should_quit, "Ctrl+Q must not quit");
+        assert_eq!(app.layout, AlbumLayout::List);
+        assert!(!app.queue.is_shuffled());
     }
 }

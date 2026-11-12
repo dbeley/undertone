@@ -102,6 +102,12 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                             colors,
                             index >= app.selected + visible,
                         );
+                        // Only ask for a paint once the blob actually exists:
+                        // otherwise the painter records the placement as
+                        // painted and never emits it when the art arrives.
+                        if !app.art.is_ready(&key) {
+                            continue;
+                        }
                         app.placements.push(Placement::new(
                             key,
                             main.y + slot as u16 * ROW_HEIGHT,
@@ -132,6 +138,9 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                             colors,
                             index >= app.selected + per_page,
                         );
+                        if !app.art.is_ready(&key) {
+                            continue;
+                        }
                         app.placements
                             .push(Placement::new(key, y, x, GRID_THUMB_H, GRID_THUMB_W));
                     }
@@ -143,8 +152,10 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                 if let Some(cover) = album.cover_art.as_deref() {
                     let colors = app.settings.cover_colors;
                     let key = app.art.request(cover, 20, 8, colors, false);
-                    app.placements
-                        .push(Placement::new(key, main.y, main.x, 8, 20));
+                    if app.art.is_ready(&key) {
+                        app.placements
+                            .push(Placement::new(key, main.y, main.x, 8, 20));
+                    }
                 }
             }
         }
@@ -703,10 +714,22 @@ mod tests {
         }
     }
 
+    /// Pretend every album's thumbnail has finished rendering.
+    fn warm_art(app: &mut App, cols: u32, rows: u32) {
+        for album in &app.albums {
+            let Some(cover) = album.cover_art.as_deref() else {
+                continue;
+            };
+            let key = ArtService::key(cover, cols, rows, 16, ArtProtocol::Sixel);
+            app.art.force_blob(&key, b"\x1bPfake".to_vec());
+        }
+    }
+
     #[test]
     fn switching_views_erases_previously_painted_art() {
         let mut app = test_app(ArtProtocol::Sixel);
         app.albums = vec![album_with_cover("a"), album_with_cover("b")];
+        warm_art(&mut app, 4, 2);
         let area = Rect::new(0, 0, 100, 30);
 
         collect_placements(&mut app, area);
@@ -727,6 +750,7 @@ mod tests {
     fn going_back_to_albums_repaints_the_thumbnails() {
         let mut app = test_app(ArtProtocol::Sixel);
         app.albums = vec![album_with_cover("a")];
+        warm_art(&mut app, 4, 2);
         let area = Rect::new(0, 0, 100, 30);
 
         collect_placements(&mut app, area);
@@ -747,6 +771,7 @@ mod tests {
         let mut app = test_app(ArtProtocol::Sixel);
         app.layout = AlbumLayout::Grid;
         app.albums = (0..12).map(|i| album_with_cover(&i.to_string())).collect();
+        warm_art(&mut app, u32::from(GRID_THUMB_W), u32::from(GRID_THUMB_H));
         let area = Rect::new(0, 0, 100, 30);
 
         collect_placements(&mut app, area);

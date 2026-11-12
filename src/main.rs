@@ -71,7 +71,7 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     let source: Option<Arc<dyn ImageSource>> = if protocol.is_pixel() {
         // Ask the server for pre-scaled art so the weak device never decodes
         // a full-size image.
-        Some(Arc::new(SubsonicImageSource::new(client.clone(), 300)))
+        Some(Arc::new(SubsonicImageSource::new(client.clone())))
     } else {
         None
     };
@@ -103,10 +103,29 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut terminal = setup_terminal()?;
-    let result = event_loop(&mut terminal, &mut app);
+    let key_log = if args.debug { open_key_log() } else { None };
+    let result = event_loop(&mut terminal, &mut app, key_log);
     restore_terminal(&mut terminal)?;
     app.art.shutdown();
     result
+}
+
+/// Append-only key log for `--debug`.
+fn open_key_log() -> Option<std::fs::File> {
+    let base = match std::env::var("XDG_STATE_HOME") {
+        Ok(value) if !value.is_empty() => value,
+        _ => format!(
+            "{}/.local/state",
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+        ),
+    };
+    let dir = std::path::PathBuf::from(base).join("undertone");
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("keys.log"))
+        .ok()
 }
 
 fn resolve_protocol(args: &cli::Args, settings: &Settings) -> ArtProtocol {
@@ -149,18 +168,39 @@ fn restore_terminal(terminal: &mut ui::Term) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn event_loop(terminal: &mut ui::Term, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+fn event_loop(
+    terminal: &mut ui::Term,
+    app: &mut App,
+    mut key_log: Option<std::fs::File>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let events = Events::spawn(TICK);
 
     loop {
         match events.next() {
-            Some(Input::Key(key)) => app.handle_key(key),
+            Some(Input::Key(key)) => {
+                if let Some(log) = key_log.as_mut() {
+                    // `--debug`: record every key so a phantom keypress can be
+                    // traced to the terminal or to the app.
+                    let _ = writeln!(
+                        log,
+                        "{:?} kind={:?} mods={:?}",
+                        key.code, key.kind, key.modifiers
+                    );
+                    let _ = log.flush();
+                }
+                app.handle_key(key)
+            }
             Some(Input::Resize) => {
                 // Placements are invalid after a resize.
-                app.painter.invalidate();
+                app.needs_clear = true;
                 app.needs_redraw = true;
             }
-            Some(Input::Tick) => app.tick(),
+            Some(Input::Tick) => {
+                if let Some(log) = key_log.as_mut() {
+                    let _ = writeln!(log, "tick");
+                }
+                app.tick()
+            }
             None => break,
         }
 
@@ -181,10 +221,38 @@ fn event_loop(terminal: &mut ui::Term, app: &mut App) -> Result<(), Box<dyn std:
         if size.width == 0 || size.height == 0 {
             continue;
         }
+
+        // Blanking cells does not remove a sixel: the pixels live in the
+        // terminal's image layer, not the character grid. Navigation therefore
+        // clears the screen instead of diffing it.
+        if app.needs_clear {
+            app.needs_clear = false;
+            app.painter.invalidate();
+            terminal.clear()?;
+            if app.protocol == ArtProtocol::Kitty {
+                // kitty images are objects, not cells, so delete them by id.
+                terminal
+                    .backend_mut()
+                    .write_all(b"\x1b_Ga=d,d=a,q=2\x1b\\")?;
+                terminal.backend_mut().flush()?;
+            }
+        }
+
         let area = Rect::new(0, 0, size.width, size.height);
 
         ui::collect_placements(app, area);
         let plan = app.painter.plan(&app.placements);
+
+        if let Some(log) = key_log.as_mut() {
+            let _ = writeln!(
+                log,
+                "draw placements={} paints={} pending={} ready={}",
+                app.placements.len(),
+                plan.paints.len(),
+                app.art.pending(),
+                app.art.ready_count()
+            );
+        }
 
         // Order matters: erase, draw text, then paint images over it.
         ui::emit_erases(terminal, &plan)?;

@@ -20,7 +20,7 @@ const IMAGE: &str = "tests/fixtures/cover-test.jpg";
 struct FileSource(PathBuf);
 
 impl ImageSource for FileSource {
-    fn fetch(&self, _cover_id: &str) -> Result<Vec<u8>, String> {
+    fn fetch(&self, _cover_id: &str, _px: u32) -> Result<Vec<u8>, String> {
         std::fs::read(&self.0).map_err(|err| err.to_string())
     }
 }
