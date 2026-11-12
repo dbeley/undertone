@@ -35,7 +35,7 @@ impl Repeat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct QueueItem {
     pub id: String,
     pub title: String,

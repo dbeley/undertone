@@ -120,7 +120,25 @@ impl SubsonicClient {
         self.get_json("getArtistInfo2", "artistInfo2", &[("id", id)])
     }
 
+    /// Songs similar to `id`.
+    ///
+    /// Uses `getSimilarSongs` (v1) rather than `getSimilarSongs2`: on Navidrome
+    /// 0.64 the v2 endpoint stalled past a thirty-second read timeout while v1
+    /// answered immediately, and hanging the UI to build a queue is a far worse
+    /// failure than a thinner list.
     pub fn similar_songs(&self, id: &str, count: u32) -> Result<Vec<Song>, SubsonicError> {
+        let count = count.to_string();
+        let list: SongList = self.get_json(
+            "getSimilarSongs",
+            "similarSongs",
+            &[("id", id), ("count", &count)],
+        )?;
+        Ok(list.song)
+    }
+
+    /// The OpenSubsonic `getSimilarSongs2` variant, kept for servers that only
+    /// implement the newer form. Not used on the hot path: see above.
+    pub fn similar_songs_v2(&self, id: &str, count: u32) -> Result<Vec<Song>, SubsonicError> {
         let count = count.to_string();
         let list: SongList = self.get_json(
             "getSimilarSongs2",

@@ -13,5 +13,6 @@ pub mod player;
 pub mod process;
 pub mod queue;
 pub mod render;
+pub mod session;
 pub mod subsonic;
 pub mod ui;

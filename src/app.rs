@@ -14,6 +14,7 @@ use crate::listen_later::ListenLater;
 use crate::player::{LoadMode, Player, PlayerEvent, ScrobbleAction, Scrobbler, Seek, TrackSource};
 use crate::queue::{Queue, QueueItem, Step};
 use crate::render::{ArtProtocol, Painter, Placement};
+use crate::session::Session;
 use crate::subsonic::{Album, AlbumListQuery, AlbumListType, Song, SubsonicClient};
 
 /// Cells a thumbnail occupies in the album list.
@@ -52,6 +53,10 @@ pub struct NowPlaying {
     pub position: f64,
     pub duration: f64,
     pub paused: bool,
+    /// True once a stream has actually been handed to the player. A track
+    /// restored from a previous session is shown, but nothing is loaded yet, so
+    /// resuming has to start playback rather than unpause silence.
+    pub loaded: bool,
     pub listened: f64,
     pub scrobbler: Scrobbler,
 }
@@ -63,6 +68,7 @@ impl Default for NowPlaying {
             position: 0.0,
             duration: 0.0,
             paused: true,
+            loaded: false,
             listened: 0.0,
             scrobbler: Scrobbler::default(),
         }
@@ -96,6 +102,9 @@ pub struct App {
     pub listen_albums: Vec<Album>,
     pub listen_selected: usize,
     pub listen_scroll: usize,
+    /// The track Auto DJ last tried to extend from, so one barren track is not
+    /// retried on every transition.
+    pub auto_dj_seed: Option<String>,
     pub selected: usize,
     pub scroll: usize,
     pub detail: Option<Album>,
@@ -151,6 +160,7 @@ impl App {
             listen_albums,
             listen_selected: 0,
             listen_scroll: 0,
+            auto_dj_seed: None,
             selected: 0,
             scroll: 0,
             detail: None,
@@ -332,19 +342,7 @@ impl App {
     }
 
     fn to_queue_items(songs: &[Song]) -> Vec<QueueItem> {
-        songs
-            .iter()
-            .map(|song| QueueItem {
-                id: song.id.clone(),
-                title: song.title.clone(),
-                artist: song.artist.clone(),
-                album: song.album.clone(),
-                cover_art: song.cover_art.clone(),
-                duration: song.duration,
-                suffix: song.suffix.clone(),
-                bit_rate: song.bit_rate,
-            })
-            .collect()
+        songs.iter().map(queue_item).collect()
     }
 
     /// Queue this album and start playing it.
@@ -398,12 +396,91 @@ impl App {
         self.now.duration = f64::from(item.duration.unwrap_or(0));
         self.now.listened = 0.0;
         self.now.paused = false;
+        self.now.loaded = true;
         self.needs_redraw = true;
 
         if self.settings.scrobble {
             let actions = self.now.scrobbler.start(&item.id, unix_millis());
             self.dispatch_scrobbles(actions);
         }
+
+        // Top the queue up from here rather than from the tick: this runs once
+        // per track, so a slow server costs one transition instead of making
+        // the UI stutter every second.
+        self.auto_dj_top_up();
+    }
+
+    // ------------------------------------------------------------------ auto dj
+
+    /// How few tracks may remain before the queue is topped up.
+    pub const AUTO_DJ_MIN_AHEAD: usize = 2;
+    /// How many similar tracks one top-up asks the server for.
+    pub const AUTO_DJ_BATCH: u32 = 10;
+
+    /// Extend the queue with similar tracks when it is running out.
+    ///
+    /// Blocking, and deliberately so: it runs once per track transition, and
+    /// the alternative — a background fetch — would have to splice songs into a
+    /// queue the cursor indexes while the user is moving through it.
+    pub fn auto_dj_top_up(&mut self) {
+        if !self.settings.auto_dj {
+            return;
+        }
+        let Some(seed) = self.now.track.as_ref().map(|track| track.id.clone()) else {
+            return;
+        };
+        if self.queue.upcoming(Self::AUTO_DJ_MIN_AHEAD).len() >= Self::AUTO_DJ_MIN_AHEAD {
+            return;
+        }
+        // One attempt per track. A server that knows nothing similar must not
+        // be asked again every time the same track comes round.
+        if self.auto_dj_seed.as_deref() == Some(seed.as_str()) {
+            return;
+        }
+        self.auto_dj_seed = Some(seed.clone());
+
+        let similar = self
+            .client
+            .similar_songs(&seed, Self::AUTO_DJ_BATCH)
+            .unwrap_or_default();
+        let mut additions = self.unheard(similar);
+        if additions.is_empty() {
+            // `getSimilarSongs` needs Last.fm data or a rich library: on the
+            // demo it returns tracks from the same album, which are usually
+            // already queued. Falling back only on *error* would leave Auto DJ
+            // doing nothing at all on such a server, so fall back when the
+            // similar result adds nothing new either. Keeping the music
+            // playing beats stopping dead.
+            additions = self.unheard(
+                self.client
+                    .random_songs(Self::AUTO_DJ_BATCH)
+                    .unwrap_or_default(),
+            );
+        }
+
+        if additions.is_empty() {
+            return;
+        }
+        let count = additions.len();
+        let items: Vec<QueueItem> = additions.iter().map(queue_item).collect();
+        self.queue.append(items);
+        self.status(format!("auto dj: {count} more queued"));
+        self.needs_redraw = true;
+    }
+
+    /// Drop candidates already queued, and the track that seeded them.
+    fn unheard(&self, candidates: Vec<Song>) -> Vec<Song> {
+        let queued: std::collections::HashSet<&str> = self
+            .queue
+            .items()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        candidates
+            .into_iter()
+            .filter(|song| !queued.contains(song.id.as_str()))
+            .take(Self::AUTO_DJ_BATCH as usize)
+            .collect()
     }
 
     fn dispatch_scrobbles(&self, actions: Vec<ScrobbleAction>) {
@@ -421,7 +498,9 @@ impl App {
     }
 
     pub fn toggle_pause(&mut self) {
-        if self.now.track.is_none() {
+        // Nothing loaded yet (a restored session, or a fresh start): there is
+        // no stream to unpause, so start the current track instead.
+        if self.now.track.is_none() || !self.now.loaded {
             self.play_current();
             return;
         }
@@ -566,7 +645,7 @@ impl App {
             return;
         }
 
-        let playing = self.now.track.is_some() && !self.now.paused;
+        let playing = self.now.loaded && self.now.track.is_some() && !self.now.paused;
         if !playing {
             return;
         }
@@ -831,6 +910,44 @@ impl App {
         }
     }
 
+    // ---------------------------------------------------------------- session
+
+    /// Restore the queue from a previous run.
+    ///
+    /// Deliberately silent: the track is shown in the bar and selected in the
+    /// queue, but nothing is streamed until you press play. An app that starts
+    /// making noise because it remembered something is a bad housemate.
+    pub fn restore_session(&mut self, session: &Session) {
+        if session.queue.is_empty() {
+            return;
+        }
+        let position = session.position.min(session.queue.len().saturating_sub(1));
+        self.queue.replace(session.queue.clone());
+        self.queue.jump_to(position);
+        if let Some(volume) = session.volume {
+            self.volume = volume;
+            let _ = self.player.set_volume(volume);
+        }
+        if let Some(item) = self.queue.current().cloned() {
+            self.now.duration = f64::from(item.duration.unwrap_or(0));
+            self.now.track = Some(item);
+            self.now.position = 0.0;
+            self.now.paused = true;
+            self.now.loaded = false;
+        }
+        self.status("restored last session — p to play");
+        self.needs_redraw = true;
+    }
+
+    /// What to save on the way out.
+    pub fn session_snapshot(&self) -> Session {
+        Session {
+            queue: self.queue.items().to_vec(),
+            position: self.queue.position().unwrap_or(0),
+            volume: Some(self.volume),
+        }
+    }
+
     /// Tiles per row for the current width.
     pub fn grid_columns(&self, width: u16) -> usize {
         (width / GRID_TILE_W).max(1) as usize
@@ -850,6 +967,20 @@ impl App {
             AlbumLayout::Grid => "grid",
         };
         self.status(format!("album view: {label}"));
+    }
+}
+
+/// One song as the queue and the now-playing bar need it.
+fn queue_item(song: &Song) -> QueueItem {
+    QueueItem {
+        id: song.id.clone(),
+        title: song.title.clone(),
+        artist: song.artist.clone(),
+        album: song.album.clone(),
+        cover_art: song.cover_art.clone(),
+        duration: song.duration,
+        suffix: song.suffix.clone(),
+        bit_rate: song.bit_rate,
     }
 }
 
@@ -987,7 +1118,10 @@ mod tests {
             title: "a track".into(),
             ..Default::default()
         });
+        // Playing implies a stream is loaded and the queue holds the track.
+        app.now.loaded = true;
         app.now.paused = false;
+        app.queue.replace(vec![track("s1")]);
 
         app.handle_key(key(KeyCode::Char('p')));
         assert!(app.now.paused, "p should pause a playing track");
@@ -1094,6 +1228,119 @@ mod tests {
         assert_eq!(app.listen_selected, 2);
         app.handle_key(key(KeyCode::Char('k')));
         assert_eq!(app.listen_selected, 1);
+    }
+
+    // -------------------------------------------------------------- auto dj
+
+    fn track(id: &str) -> QueueItem {
+        QueueItem {
+            id: id.to_string(),
+            title: format!("track {id}"),
+            ..Default::default()
+        }
+    }
+
+    fn song(id: &str) -> Song {
+        Song {
+            id: id.to_string(),
+            title: format!("song {id}"),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn auto_dj_does_nothing_when_disabled() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.now.track = Some(track("seed"));
+        app.now.loaded = true;
+        app.queue.replace(vec![track("seed")]);
+        app.auto_dj_top_up();
+        assert_eq!(app.queue.len(), 1, "disabled auto dj must not extend");
+        assert!(app.auto_dj_seed.is_none());
+    }
+
+    #[test]
+    fn auto_dj_leaves_a_healthy_queue_alone_without_asking_the_server() {
+        let mut app = app();
+        app.settings.auto_dj = true;
+        app.now.track = Some(track("seed"));
+        app.now.loaded = true;
+        app.queue
+            .replace(vec![track("seed"), track("a"), track("b"), track("c")]);
+        app.auto_dj_top_up();
+        // Enough ahead that no request is made at all: the seed is only
+        // recorded when we actually try.
+        assert!(app.auto_dj_seed.is_none());
+        assert_eq!(app.queue.len(), 4);
+    }
+
+    #[test]
+    fn unheard_drops_what_is_already_queued() {
+        let mut app = app();
+        app.queue.replace(vec![track("a"), track("b")]);
+        let picked = app.unheard(vec![song("b"), song("c"), song("c")]);
+        let ids: Vec<&str> = picked.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["c", "c"], "only the unqueued survive");
+    }
+
+    // --------------------------------------------------------------- session
+
+    fn session_of(ids: &[&str], position: usize) -> Session {
+        Session {
+            queue: ids.iter().map(|id| track(id)).collect(),
+            position,
+            volume: Some(42),
+        }
+    }
+
+    #[test]
+    fn restoring_shows_the_track_without_playing_it() {
+        let mut app = app();
+        app.restore_session(&session_of(&["a", "b"], 1));
+
+        assert_eq!(app.queue.len(), 2);
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("b"));
+        assert!(app.now.paused, "a restored track must not be playing");
+        assert!(!app.now.loaded, "nothing is streamed until asked");
+        assert_eq!(app.volume, 42, "volume comes back too");
+    }
+
+    #[test]
+    fn a_restored_track_does_not_accumulate_listening_time() {
+        let mut app = app();
+        app.restore_session(&session_of(&["a"], 0));
+        let before = app.now.listened;
+        app.tick();
+        assert_eq!(app.now.listened, before, "silence is not listening");
+    }
+
+    #[test]
+    fn a_position_past_the_end_restores_the_last_track() {
+        let mut app = app();
+        app.restore_session(&session_of(&["a", "b", "c"], 99));
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("c"));
+    }
+
+    #[test]
+    fn an_empty_session_restores_nothing() {
+        let mut app = app();
+        app.restore_session(&Session::default());
+        assert!(app.queue.is_empty());
+        assert!(app.now.track.is_none());
+    }
+
+    #[test]
+    fn snapshot_captures_the_queue_and_position() {
+        let mut app = app();
+        app.queue.replace(vec![track("a"), track("b")]);
+        app.queue.jump_to(1);
+        app.volume = 55;
+
+        let snapshot = app.session_snapshot();
+        assert_eq!(snapshot.queue.len(), 2);
+        assert_eq!(snapshot.position, 1);
+        assert_eq!(snapshot.volume, Some(55));
     }
 
     #[test]

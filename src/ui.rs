@@ -714,13 +714,18 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         // the play state.
         _ => (
             format!(
-                "{} · art {} · shuffle {} · repeat {} · vol {}{}",
+                "{} · art {} · shuffle {} · repeat {} · vol {}{}{}",
                 app.sort.as_str(),
                 app.protocol.label(),
                 if app.queue.is_shuffled() { "on" } else { "off" },
                 app.queue.repeat().label(),
                 app.volume,
                 if app.muted { " muted" } else { "" },
+                if app.settings.auto_dj {
+                    " · autodj"
+                } else {
+                    ""
+                },
             ),
             Style::default().fg(MUTED),
         ),

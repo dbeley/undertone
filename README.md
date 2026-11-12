@@ -71,10 +71,26 @@ auto_dj = true
 [art]
 mode = "auto"
 thumb_colors = 16
+# Painted over a cover being removed; set it to your terminal's background.
+backdrop = "#000000"
 
 [player]
 mpv = "mpv"
 ```
+
+## What it remembers
+
+Two files in `$XDG_STATE_HOME/undertone/` (not the cache directory, so a cache
+wipe cannot take them):
+
+- `listen_later.json` — albums saved with `a`, newest first.
+- `session.json` — the queue and cursor from last time. Restored **paused**:
+  opening the app never starts making noise, `p` resumes.
+
+Auto DJ tops the queue up when fewer than two tracks remain, from
+`getSimilarSongs` and, when that adds nothing new, from random songs. It runs
+once per track transition rather than on a timer, so a slow server costs one
+track change instead of making the interface stutter.
 
 ## Keys
 

@@ -21,6 +21,7 @@ use undertone::event::{Events, Input};
 use undertone::listen_later::ListenLater;
 use undertone::player::{MpvOptions, MpvPlayer, NullPlayer, Player};
 use undertone::render::{ArtProtocol, Caps, CellSize, ImageSource};
+use undertone::session::Session;
 use undertone::subsonic::{SubsonicClient, SubsonicConfig};
 use undertone::ui;
 
@@ -108,6 +109,14 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     ));
     app.load_albums();
 
+    // Restore what was playing last time. Done after the status line so the
+    // "restored" message is the one you actually see.
+    if let Some(dir) = state_dir() {
+        if let Some(session) = Session::load(dir.join("session.json")) {
+            app.restore_session(&session);
+        }
+    }
+
     if let Some(path) = loaded {
         app.status(format!("config: {}", path.display()));
     }
@@ -115,6 +124,11 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = setup_terminal()?;
     let key_log = if args.debug { open_key_log() } else { None };
     let result = event_loop(&mut terminal, &mut app, key_log);
+    // Save before tearing the terminal down: a failure here must not stop the
+    // app from exiting cleanly, so the error is dropped rather than propagated.
+    if let Some(dir) = state_dir() {
+        let _ = app.session_snapshot().save(dir.join("session.json"));
+    }
     restore_terminal(&mut terminal)?;
     app.art.shutdown();
     result
