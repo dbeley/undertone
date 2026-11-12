@@ -114,6 +114,9 @@ fn app_on(server: &FakeServer) -> App {
         art,
         ArtProtocol::Symbols,
         80,
+        undertone::listen_later::ListenLater::load(
+            std::env::temp_dir().join("undertone-paging-ll.json"),
+        ),
     )
 }
 

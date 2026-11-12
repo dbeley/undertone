@@ -8,6 +8,7 @@ pub mod art;
 pub mod cli;
 pub mod config;
 pub mod event;
+pub mod listen_later;
 pub mod player;
 pub mod process;
 pub mod queue;

@@ -18,6 +18,7 @@ use undertone::art::{ArtService, SubsonicImageSource};
 use undertone::cli;
 use undertone::config::{CliOverrides, Config, Settings};
 use undertone::event::{Events, Input};
+use undertone::listen_later::ListenLater;
 use undertone::player::{MpvOptions, MpvPlayer, NullPlayer, Player};
 use undertone::render::{ArtProtocol, Caps, CellSize, ImageSource};
 use undertone::subsonic::{SubsonicClient, SubsonicConfig};
@@ -87,7 +88,16 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         })?)
     };
 
-    let mut app = App::new(client, settings, player, art, protocol, 70);
+    // Listen later lives in the state directory: it is user data, not cache,
+    // and must survive a cache wipe.
+    let listen_later = match state_dir() {
+        Some(dir) => {
+            let _ = std::fs::create_dir_all(&dir);
+            ListenLater::load(dir.join("listen_later.json"))
+        }
+        None => ListenLater::load("/tmp/undertone-listen-later.json"),
+    };
+    let mut app = App::new(client, settings, player, art, protocol, 70, listen_later);
     app.status(format!(
         "{} {} · art {} · cell {}x{}",
         server_info.server_type.as_deref().unwrap_or("subsonic"),
@@ -112,6 +122,17 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Append-only key log for `--debug`.
 fn open_key_log() -> Option<std::fs::File> {
+    let dir = state_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("keys.log"))
+        .ok()
+}
+
+/// `$XDG_STATE_HOME/undertone`, where things that must survive a restart live.
+fn state_dir() -> Option<std::path::PathBuf> {
     let base = match std::env::var("XDG_STATE_HOME") {
         Ok(value) if !value.is_empty() => value,
         _ => format!(
@@ -119,13 +140,7 @@ fn open_key_log() -> Option<std::fs::File> {
             std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
         ),
     };
-    let dir = std::path::PathBuf::from(base).join("undertone");
-    std::fs::create_dir_all(&dir).ok()?;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("keys.log"))
-        .ok()
+    Some(std::path::PathBuf::from(base).join("undertone"))
 }
 
 fn resolve_protocol(args: &cli::Args, settings: &Settings) -> ArtProtocol {

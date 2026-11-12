@@ -86,6 +86,7 @@ Enter      open album · play track    p / Space  play / pause
 > / <      next / prev         f / b   seek ±10s
 s / r      shuffle / repeat    +/-     volume      m  mute
 Q          queue               ?       help        Esc back
+L          listen later        a       save / unsave album
 S / R      change sort / reload         q   quit
 ```
 

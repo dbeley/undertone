@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::art::ArtService;
 use crate::config::Settings;
+use crate::listen_later::ListenLater;
 use crate::player::{LoadMode, Player, PlayerEvent, ScrobbleAction, Scrobbler, Seek, TrackSource};
 use crate::queue::{Queue, QueueItem, Step};
 use crate::render::{ArtProtocol, Painter, Placement};
@@ -26,6 +27,7 @@ pub enum View {
     Albums,
     AlbumDetail,
     Queue,
+    ListenLater,
     Help,
 }
 
@@ -89,6 +91,11 @@ pub struct App {
     pub sort: AlbumListType,
     /// The server returned a short page, so there is nothing after this.
     pub albums_exhausted: bool,
+    pub listen_later: ListenLater,
+    /// `listen_later` rendered as albums, refreshed whenever the list changes.
+    pub listen_albums: Vec<Album>,
+    pub listen_selected: usize,
+    pub listen_scroll: usize,
     pub selected: usize,
     pub scroll: usize,
     pub detail: Option<Album>,
@@ -119,8 +126,10 @@ impl App {
         art: ArtService,
         protocol: ArtProtocol,
         volume: u8,
+        listen_later: ListenLater,
     ) -> Self {
         let painter = Painter::new(protocol);
+        let listen_albums = listen_later.albums();
         Self {
             client,
             queue: Queue::new(),
@@ -138,6 +147,10 @@ impl App {
             // keeps tests that inject albums by hand from making network
             // calls when their cursor nears the end of the list.
             albums_exhausted: true,
+            listen_later,
+            listen_albums,
+            listen_selected: 0,
+            listen_scroll: 0,
             selected: 0,
             scroll: 0,
             detail: None,
@@ -247,9 +260,14 @@ impl App {
     }
 
     pub fn open_selected_album(&mut self) {
-        let Some(album) = self.albums.get(self.selected) else {
+        let Some(album) = self.albums.get(self.selected).cloned() else {
             return;
         };
+        self.open_album(album);
+    }
+
+    /// Fetch and show one album's detail view.
+    fn open_album(&mut self, album: Album) {
         let id = album.id.clone();
         let name = album.name.clone();
         match self.client.album(&id) {
@@ -261,6 +279,45 @@ impl App {
             Err(err) => {
                 self.error(format!("could not open {name}: {err}"));
             }
+        }
+    }
+
+    // -------------------------------------------------------- listen later
+
+    /// `a`: add or remove the album under the cursor.
+    ///
+    /// In the detail view that is the open album; in listen later it is the
+    /// row; everywhere else it is the selection in the album list.
+    pub fn toggle_listen_later(&mut self) {
+        let album = match self.view {
+            View::ListenLater => self.listen_albums.get(self.listen_selected).cloned(),
+            View::AlbumDetail => self.detail.clone(),
+            _ => self.albums.get(self.selected).cloned(),
+        };
+        let Some(album) = album else {
+            self.status("no album under the cursor");
+            return;
+        };
+        match self.listen_later.toggle(&album) {
+            Ok(true) => self.status(format!("listen later: added {}", album.name)),
+            Ok(false) => self.status(format!("listen later: removed {}", album.name)),
+            Err(err) => self.error(format!("could not save listen later: {err}")),
+        }
+        self.refresh_listen_albums();
+    }
+
+    pub fn open_listen_later(&mut self) {
+        self.refresh_listen_albums();
+        self.set_view(View::ListenLater);
+        if self.listen_albums.is_empty() {
+            self.status("listen later is empty — press a on an album to add it");
+        }
+    }
+
+    fn refresh_listen_albums(&mut self) {
+        self.listen_albums = self.listen_later.albums();
+        if self.listen_selected >= self.listen_albums.len() {
+            self.listen_selected = self.listen_albums.len().saturating_sub(1);
         }
     }
 
@@ -595,7 +652,9 @@ impl App {
                 };
                 self.set_view(next);
             }
-            KeyCode::Char('w') => self.toggle_layout(),
+            KeyCode::Char('w') if self.view == View::Albums => self.toggle_layout(),
+            KeyCode::Char('a') => self.toggle_listen_later(),
+            KeyCode::Char('L') => self.open_listen_later(),
             KeyCode::Char('h') if self.view == View::Albums => self.move_horizontal(-1),
             KeyCode::Char('l') if self.view == View::Albums => self.move_horizontal(1),
             KeyCode::Char('j') | KeyCode::Down => self.move_vertical(1),
@@ -628,6 +687,7 @@ impl App {
                 .map(|album| album.song.len())
                 .unwrap_or(0),
             View::Queue => self.queue.len(),
+            View::ListenLater => self.listen_albums.len(),
             View::Help => 0,
         }
     }
@@ -637,6 +697,7 @@ impl App {
             View::Albums => self.selected,
             View::AlbumDetail => self.detail_selected,
             View::Queue => self.queue.position().unwrap_or(0),
+            View::ListenLater => self.listen_selected,
             View::Help => 0,
         }
     }
@@ -678,6 +739,7 @@ impl App {
             View::Queue => {
                 self.queue.jump_to(next);
             }
+            View::ListenLater => self.listen_selected = next,
             View::Help => {}
         }
     }
@@ -697,6 +759,7 @@ impl App {
             View::Queue => {
                 self.queue.jump_to(next);
             }
+            View::ListenLater => self.listen_selected = next,
             View::Help => {}
         }
     }
@@ -720,6 +783,11 @@ impl App {
             }
             View::Queue => {
                 self.play_current();
+            }
+            View::ListenLater => {
+                if let Some(album) = self.listen_albums.get(self.listen_selected).cloned() {
+                    self.open_album(album);
+                }
             }
             View::Help => {}
         }
@@ -750,6 +818,16 @@ impl App {
                     self.scroll = (selected_row + 1 - visible_rows) * cols;
                 }
             }
+        }
+    }
+
+    /// Keep the listen-later cursor inside its window.
+    pub fn ensure_listen_visible(&mut self, height: u16) {
+        let visible = (usize::from(height) / usize::from(ROW_HEIGHT)).max(1);
+        if self.listen_selected < self.listen_scroll {
+            self.listen_scroll = self.listen_selected;
+        } else if self.listen_selected >= self.listen_scroll + visible {
+            self.listen_scroll = self.listen_selected + 1 - visible;
         }
     }
 
@@ -831,7 +909,22 @@ mod tests {
             art,
             ArtProtocol::Off,
             70,
+            fresh_listen_later(),
         )
+    }
+
+    /// A listen-later list unique to one test, so parallel tests cannot see
+    /// each other's saves.
+    fn fresh_listen_later() -> ListenLater {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "undertone-ll-test-{}-{}.json",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_file(&path);
+        ListenLater::load(path)
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -952,6 +1045,65 @@ mod tests {
         let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('d')));
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn a_saves_the_selected_album_and_l_lists_it() {
+        let mut app = app();
+        app.albums = vec![album("a", 1), album("b", 1)];
+
+        app.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(app.listen_albums.len(), 1);
+        assert_eq!(app.listen_albums[0].id, "a");
+
+        app.handle_key(key(KeyCode::Char('L')));
+        assert_eq!(app.view, View::ListenLater);
+
+        // Pressing a on the row removes it again.
+        app.handle_key(key(KeyCode::Char('a')));
+        assert!(app.listen_albums.is_empty());
+    }
+
+    #[test]
+    fn listen_later_round_trips_through_the_file() {
+        let mut app = app();
+        app.albums = vec![album("a", 1)];
+        app.handle_key(key(KeyCode::Char('a')));
+
+        // A fresh load of the same path sees the entry.
+        let path = app.listen_later.path().to_path_buf();
+        assert!(ListenLater::load(&path).contains("a"));
+    }
+
+    #[test]
+    fn vim_keys_move_within_listen_later() {
+        let mut app = app();
+        app.albums = vec![album("a", 1), album("b", 1), album("c", 1)];
+        // Move between toggles: `a` on the same row would add then remove.
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('a')));
+        // Newest first: c, b, a.
+        app.handle_key(key(KeyCode::Char('L')));
+        assert_eq!(app.listen_selected, 0);
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.listen_selected, 1);
+        app.handle_key(key(KeyCode::Char('G')));
+        assert_eq!(app.listen_selected, 2);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.listen_selected, 1);
+    }
+
+    #[test]
+    fn h_leaves_listen_later_again() {
+        let mut app = app();
+        app.albums = vec![album("a", 1)];
+        app.handle_key(key(KeyCode::Char('L')));
+        assert_eq!(app.view, View::ListenLater);
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.view, View::Albums);
     }
 
     #[test]

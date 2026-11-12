@@ -115,35 +115,12 @@ pub fn collect_placements(app: &mut App, area: Rect) {
             match app.layout {
                 AlbumLayout::List => {
                     let visible = visible_albums(main);
-                    for slot in 0..visible {
-                        let index = app.scroll + slot;
-                        let Some(album) = app.albums.get(index) else {
-                            break;
-                        };
-                        let Some(cover) = album.cover_art.as_deref() else {
-                            continue;
-                        };
-                        let key = app.art.request(
-                            cover,
-                            u32::from(THUMB_CELLS),
-                            u32::from(THUMB_ROWS),
-                            colors,
-                            index >= app.selected + visible,
-                        );
-                        // Only ask for a paint once the blob actually exists:
-                        // otherwise the painter records the placement as
-                        // painted and never emits it when the art arrives.
-                        if !app.art.is_ready(&key) {
-                            continue;
-                        }
-                        app.placements.push(Placement::new(
-                            key,
-                            main.y + slot as u16 * ROW_HEIGHT,
-                            main.x,
-                            THUMB_ROWS,
-                            THUMB_CELLS,
-                        ));
-                    }
+                    let covers: Vec<Option<String>> = app
+                        .albums
+                        .iter()
+                        .map(|album| album.cover_art.clone())
+                        .collect();
+                    collect_list_placements(app, main, &covers, app.scroll, app.selected + visible);
                 }
                 AlbumLayout::Grid => {
                     let cols = app.grid_columns(main.width).max(1) as u16;
@@ -187,6 +164,22 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                 }
             }
         }
+        View::ListenLater => {
+            app.ensure_listen_visible(main.height);
+            let visible = visible_albums(main);
+            let covers: Vec<Option<String>> = app
+                .listen_albums
+                .iter()
+                .map(|album| album.cover_art.clone())
+                .collect();
+            collect_list_placements(
+                app,
+                main,
+                &covers,
+                app.listen_scroll,
+                app.listen_selected + visible,
+            );
+        }
         View::Queue | View::Help => {}
     }
 
@@ -216,6 +209,49 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                 }
             }
         }
+    }
+}
+
+/// Place list thumbnails for a slice of album covers.
+///
+/// `prefetch_from` is the first index that counts as lookahead rather than
+/// visible work.
+fn collect_list_placements(
+    app: &mut App,
+    main: Rect,
+    covers: &[Option<String>],
+    scroll: usize,
+    prefetch_from: usize,
+) {
+    let visible = visible_albums(main);
+    for slot in 0..visible {
+        let index = scroll + slot;
+        if index >= covers.len() {
+            break;
+        }
+        let Some(cover) = covers[index].as_deref() else {
+            continue;
+        };
+        let key = app.art.request(
+            cover,
+            u32::from(THUMB_CELLS),
+            u32::from(THUMB_ROWS),
+            app.settings.thumb_colors,
+            index >= prefetch_from,
+        );
+        // Only ask for a paint once the blob actually exists: otherwise the
+        // painter records the placement as painted and never emits it when the
+        // art arrives.
+        if !app.art.is_ready(&key) {
+            continue;
+        }
+        app.placements.push(Placement::new(
+            key,
+            main.y + slot as u16 * ROW_HEIGHT,
+            main.x,
+            THUMB_ROWS,
+            THUMB_CELLS,
+        ));
     }
 }
 
@@ -291,6 +327,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Albums => draw_albums(frame, app, main),
         View::AlbumDetail => draw_album_detail(frame, app, main),
         View::Queue => draw_queue(frame, app, main),
+        View::ListenLater => draw_listen_later(frame, app, main),
         View::Help => draw_help(frame, main),
     }
 
@@ -328,14 +365,47 @@ fn draw_thumb_placeholder(frame: &mut Frame, rect: Rect, has_cover: bool) {
 }
 
 fn draw_albums_list(frame: &mut Frame, app: &App, area: Rect) {
+    draw_album_rows(frame, app, area, &app.albums, app.selected, app.scroll);
+}
+
+fn draw_listen_later(frame: &mut Frame, app: &App, area: Rect) {
+    if app.listen_albums.is_empty() {
+        frame.render_widget(
+            Paragraph::new(
+                "Nothing saved. Press a on an album to keep it for later; L returns here.",
+            )
+            .style(Style::default().fg(MUTED)),
+            area,
+        );
+        return;
+    }
+    draw_album_rows(
+        frame,
+        app,
+        area,
+        &app.listen_albums,
+        app.listen_selected,
+        app.listen_scroll,
+    );
+}
+
+/// Album rows, shared by the library list and listen later.
+fn draw_album_rows(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    albums: &[crate::subsonic::Album],
+    selected: usize,
+    scroll: usize,
+) {
     let visible = visible_albums(area);
     for slot in 0..visible {
-        let index = app.scroll + slot;
-        let Some(album) = app.albums.get(index) else {
+        let index = scroll + slot;
+        let Some(album) = albums.get(index) else {
             break;
         };
         let row = album_row_rect(area, slot);
-        let is_selected = index == app.selected;
+        let is_selected = index == selected;
 
         let thumb_key = album.cover_art.as_deref().map(|cover| {
             ArtService::key(
@@ -605,6 +675,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("+ / -      volume"),
         Line::from("m          mute"),
         Line::from("Q          queue"),
+        Line::from("L          listen later"),
+        Line::from("a          save / unsave album"),
         Line::from("S / R      change sort / reload"),
         Line::from("Esc        back"),
         Line::from("q          quit"),
@@ -919,7 +991,20 @@ mod tests {
             art,
             protocol,
             70,
+            fresh_listen_later(),
         )
+    }
+
+    fn fresh_listen_later() -> crate::listen_later::ListenLater {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "undertone-ui-ll-{}-{}.json",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_file(&path);
+        crate::listen_later::ListenLater::load(path)
     }
 
     fn album_with_cover(id: &str) -> Album {
