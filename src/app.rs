@@ -807,6 +807,7 @@ mod tests {
             cache_bytes: 1024 * 1024,
             mpv_binary: PathBuf::from("mpv"),
             transcode: false,
+            backdrop: [0, 0, 0],
         }
     }
 

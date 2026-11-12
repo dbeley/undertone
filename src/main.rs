@@ -255,7 +255,7 @@ fn event_loop(
         }
 
         // Order matters: erase, draw text, then paint images over it.
-        ui::emit_erases(terminal, &plan)?;
+        ui::emit_erases(terminal, &plan, app.protocol, app.settings.backdrop)?;
         terminal.draw(|frame| ui::draw(frame, app))?;
         ui::emit_paints(terminal, &plan, &app.art)?;
     }

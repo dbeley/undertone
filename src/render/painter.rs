@@ -59,20 +59,23 @@ impl Placement {
             col: self.col,
             rows: self.rows,
             cols: self.cols,
+            key: Some(self.key.clone()),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaintOp {
-    /// Blank this rectangle. Under kitty graphics the terminal layer turns
-    /// this into a delete-by-image-id; under sixel, blanking the cells is
-    /// enough because the pixels live in the grid.
+    /// Remove this image. Blanking the cells alone is not enough: sixel pixels
+    /// live in the image layer and kitty images are objects above the grid, so
+    /// the emitter overpaints (sixel) or deletes by id (kitty). `key` names the
+    /// image being removed, which is how the kitty id is derived.
     Erase {
         row: u16,
         col: u16,
         rows: u16,
         cols: u16,
+        key: Option<String>,
     },
     /// Write this blob at this rectangle.
     Paint { placement: Placement },

@@ -22,7 +22,9 @@ use crate::app::{
     THUMB_CELLS, THUMB_ROWS,
 };
 use crate::art::ArtService;
-use crate::render::{FramePlan, PaintOp, Placement};
+use crate::render::{
+    blank_sixel, kitty_delete, kitty_id, ArtProtocol, FramePlan, PaintOp, Placement,
+};
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -37,9 +39,9 @@ fn selected_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD).fg(ACCENT)
 }
 
-/// Rows the now-playing bar occupies, top border included: title/meta beside
-/// the cover, a thin progress line, then the queue preview.
-pub const NOW_PLAYING_HEIGHT: u16 = 5;
+/// Rows the now-playing bar occupies, top border included: two lines beside
+/// the cover — track and clock, then progress plus album/format/next.
+pub const NOW_PLAYING_HEIGHT: u16 = 3;
 
 /// Split the screen into [main, status, now-playing].
 fn shell_layout(area: Rect, has_track: bool) -> (Rect, Rect, Option<Rect>) {
@@ -80,7 +82,8 @@ fn now_playing_cover_rect(inner: Rect) -> Rect {
         x: inner.x,
         y: inner.y,
         width: THUMB_CELLS.min(inner.width / 2),
-        height: THUMB_ROWS.min(inner.height.saturating_sub(1)),
+        // The bar is exactly two rows tall, which is the thumbnail height.
+        height: THUMB_ROWS.min(inner.height),
     }
 }
 
@@ -216,19 +219,44 @@ pub fn collect_placements(app: &mut App, area: Rect) {
     }
 }
 
-pub fn emit_erases(terminal: &mut Term, plan: &FramePlan) -> io::Result<()> {
+pub fn emit_erases(
+    terminal: &mut Term,
+    plan: &FramePlan,
+    protocol: ArtProtocol,
+    backdrop: [u8; 3],
+) -> io::Result<()> {
     for op in &plan.erases {
         if let PaintOp::Erase {
             row,
             col,
             rows,
             cols,
+            key,
         } = op
         {
+            // Cells first: images sit above the character grid, so stale art
+            // would still cover whatever text is written underneath.
             let blanks = " ".repeat(usize::from(*cols));
             for offset in 0..*rows {
                 queue!(terminal.backend_mut(), MoveTo(*col, row + offset))?;
                 terminal.backend_mut().write_all(blanks.as_bytes())?;
+            }
+            match protocol {
+                // No delete under sixel: paint a solid rectangle over it.
+                ArtProtocol::Sixel => {
+                    queue!(terminal.backend_mut(), MoveTo(*col, *row))?;
+                    terminal
+                        .backend_mut()
+                        .write_all(&blank_sixel(*rows, *cols, backdrop))?;
+                }
+                ArtProtocol::Kitty => {
+                    if let Some(key) = key {
+                        terminal
+                            .backend_mut()
+                            .write_all(&kitty_delete(kitty_id(key)))?;
+                    }
+                }
+                ArtProtocol::Symbols | ArtProtocol::Off => {}
             }
         }
     }
@@ -609,10 +637,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(ACCENT)
             },
         ),
+        // The server address used to lead this line. It is fixed at startup
+        // and says nothing while you are listening, so it gave up its space to
+        // the play state.
         _ => (
             format!(
-                "{} · {} · art {} · shuffle {} · repeat {} · vol {}{}",
-                app.settings.server,
+                "{} · art {} · shuffle {} · repeat {} · vol {}{}",
                 app.sort.as_str(),
                 app.protocol.label(),
                 if app.queue.is_shuffled() { "on" } else { "off" },
@@ -634,7 +664,7 @@ fn draw_now_playing(frame: &mut Frame, app: &App, area: Rect) {
     let Some(track) = app.now.track.as_ref() else {
         return;
     };
-    if inner.width < 12 || inner.height < 3 {
+    if inner.width < 12 || inner.height < 2 {
         return;
     }
 
@@ -705,66 +735,63 @@ fn draw_now_playing(frame: &mut Frame, app: &App, area: Rect) {
         },
     );
 
-    // Album and format on the second row.
-    let mut meta: Vec<String> = Vec::new();
-    if let Some(album) = track.album.as_deref().filter(|a| !a.is_empty()) {
-        meta.push(album.to_string());
-    }
-    if let Some(format) = track.format_label() {
-        meta.push(format);
-    }
-    if app.now.paused {
-        meta.push("paused".into());
-    }
-    if !meta.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                truncate_chars(&meta.join(" · "), usize::from(text_w)),
-                Style::default().fg(MUTED),
-            ))),
-            Rect {
-                x: text_x,
-                y: inner.y + 1,
-                width: text_w,
-                height: 1,
-            },
-        );
-    }
-
-    // A thin rule rather than a filled gauge: a single line of glyphs reads as
-    // a progress bar without adding visual weight.
-    let bar_y = inner.y + inner.height - 2;
+    // Album, format and next-up share the second row with the progress rule.
+    // A rule of glyphs rather than a filled gauge is what makes it read thin.
+    let bar_w = (inner.width / 4)
+        .clamp(8, 28)
+        .min(text_w.saturating_sub(10));
     draw_thin_progress(
         frame,
         app,
         Rect {
-            x: inner.x,
-            y: bar_y,
-            width: inner.width,
+            x: text_x,
+            y: inner.y + 1,
+            width: bar_w,
             height: 1,
         },
     );
 
-    // What plays next.
-    let upcoming = app.queue.upcoming(3);
+    let mut meta = String::new();
+    if let Some(album) = track.album.as_deref().filter(|a| !a.is_empty()) {
+        meta.push_str(album);
+    }
+    if let Some(format) = track.format_label() {
+        if !meta.is_empty() {
+            meta.push_str(" · ");
+        }
+        meta.push_str(&format);
+    }
+    if app.now.paused {
+        if !meta.is_empty() {
+            meta.push_str(" · ");
+        }
+        meta.push_str("paused");
+    }
+
+    let upcoming = app.queue.upcoming(2);
     if !upcoming.is_empty() {
-        let joined = upcoming
+        let titles = upcoming
             .iter()
             .map(|item| item.title.clone())
             .collect::<Vec<_>>()
             .join(" · ");
+        if !meta.is_empty() {
+            meta.push_str("   ");
+        }
+        meta.push_str("next  ");
+        meta.push_str(&titles);
+    }
+
+    if !meta.is_empty() && text_w > bar_w + 2 {
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("next  ", Style::default().fg(MUTED)),
-                Span::styled(
-                    truncate_chars(&joined, usize::from(inner.width).saturating_sub(6)),
-                    Style::default(),
-                ),
-            ])),
+            Paragraph::new(Line::from(Span::styled(
+                truncate_chars(&meta, usize::from(text_w - bar_w - 2)),
+                Style::default().fg(MUTED),
+            ))),
             Rect {
-                x: inner.x,
-                y: bar_y + 1,
-                width: inner.width,
+                x: text_x + bar_w + 2,
+                y: inner.y + 1,
+                width: text_w - bar_w - 2,
                 height: 1,
             },
         );
@@ -874,6 +901,7 @@ mod tests {
             cache_bytes: 1024 * 1024,
             mpv_binary: PathBuf::from("mpv"),
             transcode: false,
+            backdrop: [0, 0, 0],
         };
         // No image source: placements are computed but no blobs ever arrive,
         // which is exactly what we want to test layout, not rendering.

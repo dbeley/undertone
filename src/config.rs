@@ -58,6 +58,12 @@ pub struct ArtConfig {
     pub cover_colors: u32,
     #[serde(default = "default_cache_mb")]
     pub cache_mb: u64,
+    /// Colour painted over a cover that is being removed, as `#rrggbb`.
+    ///
+    /// sixel has no delete operation, so a rectangle is cleared by drawing a
+    /// solid image over it. Set this to the terminal's background colour.
+    #[serde(default = "default_backdrop")]
+    pub backdrop: String,
 }
 
 impl Default for ArtConfig {
@@ -67,6 +73,7 @@ impl Default for ArtConfig {
             thumb_colors: default_thumb_colors(),
             cover_colors: default_cover_colors(),
             cache_mb: default_cache_mb(),
+            backdrop: default_backdrop(),
         }
     }
 }
@@ -93,6 +100,21 @@ impl Default for PlayerConfig {
 fn default_art_mode() -> String {
     "auto".to_string()
 }
+
+fn default_backdrop() -> String {
+    "#000000".to_string()
+}
+
+/// Parse `#rrggbb` (or `rrggbb`). Anything else falls back to black.
+pub fn parse_backdrop(value: &str) -> [u8; 3] {
+    let hex = value.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return [0, 0, 0];
+    }
+    let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16).unwrap_or(0);
+    [channel(0..2), channel(2..4), channel(4..6)]
+}
+
 fn default_thumb_colors() -> u32 {
     16
 }
@@ -124,6 +146,8 @@ pub struct Settings {
     pub cache_bytes: u64,
     pub mpv_binary: PathBuf,
     pub transcode: bool,
+    /// Colour used to overpaint a removed cover under sixel.
+    pub backdrop: [u8; 3],
 }
 
 impl Config {
@@ -203,6 +227,7 @@ impl Config {
             cache_bytes: self.art.cache_mb.saturating_mul(1024 * 1024),
             mpv_binary: PathBuf::from(self.player.mpv),
             transcode: matches!(self.player.transcode.as_str(), "mp3" | "mp3-192"),
+            backdrop: parse_backdrop(&self.art.backdrop),
         })
     }
 }

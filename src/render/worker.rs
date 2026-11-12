@@ -16,6 +16,7 @@ use std::thread::JoinHandle;
 
 use super::cache::BlobCache;
 use super::chafa::{sixel_dimensions, ArtRenderer, RenderRequest};
+use super::clear;
 use super::images::ImageCache;
 use super::protocol::ArtProtocol;
 
@@ -339,6 +340,12 @@ fn worker_loop(
         match renderer.render(&miss_requests) {
             Ok(rendered) => {
                 for (key, blob) in miss_keys.into_iter().zip(rendered) {
+                    // kitty images need an id to be deletable later; chafa does not set
+                    // one, so it is injected once, before the blob is cached.
+                    let blob = match renderer.protocol() {
+                        ArtProtocol::Kitty => clear::tag_kitty(&blob, clear::kitty_id(&key)),
+                        _ => blob,
+                    };
                     let _ = blobs.put(&key, &blob);
                     let dimensions = dimensions_of(renderer.protocol(), &blob);
                     if done_tx

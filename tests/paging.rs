@@ -95,6 +95,7 @@ fn app_on(server: &FakeServer) -> App {
         cover_colors: 16,
         thumb_colors: 16,
         transcode: false,
+        backdrop: [0, 0, 0],
         cache_dir: std::path::PathBuf::from("/tmp/undertone-paging"),
         cache_bytes: 1 << 20,
         mpv_binary: std::path::PathBuf::from("mpv"),
