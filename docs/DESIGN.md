@@ -10,7 +10,7 @@
 
 ## Status
 
-Phases 0–2 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache, player trait, mpv IPC, queue, scrobbler), verified live against Navidrome 0.64.2 and with real mpv 0.42 playing through a null sink. Phases 3–6 outstanding. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
+Phases 0–3 complete and merged (flake, CI, Subsonic transport, typed endpoints, TTL cache, player trait, mpv IPC, queue, scrobbler, render pipeline). Verified live against Navidrome 0.64.2, with real mpv 0.42 through a null sink, and with real chafa 1.18 output fixtures. Phases 4–6 outstanding — there is no UI yet. Numbers in this document were measured on 2 vCPU of an Intel N100; Pi 2 projections are estimates.
 
 ---
 
@@ -92,6 +92,18 @@ Batching cuts per-image overhead ~2.5×. Twelve thumbnails ≈ one spawn + ~9 en
 | 12 s playback | 71.2 MB |
 
 `--no-scripts` is not a valid mpv 0.41 flag; use `--load-scripts=no`.
+
+### Art pipeline measured end to end (`cargo run --release --example art_bench`)
+
+12 album thumbnails at 4x3 cells, 16 colours, one 250 px source image:
+
+| | Time | Notes |
+|---|---|---|
+| cold | **149 ms** | 2 chafa invocations (batch limit 8), 11 460 bytes total |
+| warm | **4.2 ms** | all 12 from the blob cache |
+| idle painter plan | **1.4 µs** | emits 0 ops |
+
+Average blob: **955 bytes per thumbnail**, matching the 963 B measured for a single 4x3 render. A full 12-thumbnail screen is 11.5 KB — the number that makes per-row sixel art viable on foot.
 
 ### chafa symbols (fallback)
 

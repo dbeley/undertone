@@ -1,0 +1,299 @@
+//! On-disk cache of encoded escape blobs.
+//!
+//! A cache hit must be a file read plus an escape write — never a re-encode.
+//! Blobs are keyed by `(cover id, pixel size, colours, protocol)`, written
+//! atomically, and evicted least-recently-modified first.
+
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+pub struct BlobCache {
+    root: PathBuf,
+    capacity_bytes: u64,
+    used_bytes: u64,
+}
+
+impl BlobCache {
+    /// Open (creating if needed) a cache directory with a byte budget.
+    pub fn new(root: impl Into<PathBuf>, capacity_bytes: u64) -> io::Result<Self> {
+        let root = root.into();
+        fs::create_dir_all(&root)?;
+        let mut cache = Self {
+            root,
+            capacity_bytes,
+            used_bytes: 0,
+        };
+        cache.used_bytes = cache.scan_used_bytes()?;
+        Ok(cache)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn used_bytes(&self) -> u64 {
+        self.used_bytes
+    }
+
+    pub fn capacity_bytes(&self) -> u64 {
+        self.capacity_bytes
+    }
+
+    pub fn path_for(&self, key: &str) -> PathBuf {
+        self.root.join(key_to_filename(key))
+    }
+
+    /// Read a blob. Returns `None` on a miss or an unreadable file.
+    pub fn get(&self, key: &str) -> Option<Vec<u8>> {
+        fs::read(self.path_for(key)).ok()
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        self.path_for(key).is_file()
+    }
+
+    /// Store a blob atomically, then evict if over budget.
+    pub fn put(&mut self, key: &str, blob: &[u8]) -> io::Result<()> {
+        let final_path = self.path_for(key);
+        let previous = fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
+
+        // Write to a unique temporary file in the same directory, then rename:
+        // a reader never sees a half-written blob.
+        let temp_path = self.root.join(format!(
+            ".tmp-{}-{:x}",
+            std::process::id(),
+            monotonic_nanos()
+        ));
+        {
+            let mut file = fs::File::create(&temp_path)?;
+            file.write_all(blob)?;
+            file.sync_all()?;
+        }
+        fs::rename(&temp_path, &final_path)?;
+
+        self.used_bytes = self.used_bytes.saturating_sub(previous) + blob.len() as u64;
+        self.evict_to_capacity()?;
+        Ok(())
+    }
+
+    /// Delete oldest blobs until the cache fits its budget.
+    pub fn evict_to_capacity(&mut self) -> io::Result<()> {
+        if self.used_bytes <= self.capacity_bytes {
+            return Ok(());
+        }
+        let mut entries = self.entries()?;
+        // Oldest first.
+        entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+
+        for (path, _) in entries {
+            if self.used_bytes <= self.capacity_bytes {
+                break;
+            }
+            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if fs::remove_file(&path).is_ok() {
+                self.used_bytes = self.used_bytes.saturating_sub(size);
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove everything. Used by tests and by a `--clear-cache` flag.
+    pub fn clear(&mut self) -> io::Result<()> {
+        for (path, _) in self.entries()? {
+            let _ = fs::remove_file(path);
+        }
+        self.used_bytes = 0;
+        Ok(())
+    }
+
+    fn scan_used_bytes(&self) -> io::Result<u64> {
+        Ok(self
+            .entries()?
+            .iter()
+            .map(|(path, _)| fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+            .sum())
+    }
+
+    /// `(path, modified)` for every cached blob.
+    fn entries(&self) -> io::Result<Vec<(PathBuf, SystemTime)>> {
+        let mut out = Vec::new();
+        let reader = match fs::read_dir(&self.root) {
+            Ok(reader) => reader,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(out),
+            Err(err) => return Err(err),
+        };
+        for entry in reader {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("blob") {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            out.push((path, modified));
+        }
+        Ok(out)
+    }
+}
+
+/// Keys may contain `/` and `:`; filenames may not.
+///
+/// Escaping is percent-style and reversible, so distinct keys can never
+/// collide (`a/b` becomes `a%2Fb`, which is not `a_b`).
+pub fn key_to_filename(key: &str) -> String {
+    let mut name = String::with_capacity(key.len() + 8);
+    for byte in key.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                name.push(byte as char);
+            }
+            _ => {
+                use std::fmt::Write as _;
+                let _ = write!(name, "%{byte:02X}");
+            }
+        }
+    }
+    if name.len() > 120 {
+        // Long keys get a stable hash rather than a truncation that could
+        // collide with a sibling.
+        name = format!("h-{:016x}", fnv1a(key));
+    }
+    name.push_str(".blob");
+    name
+}
+
+fn fnv1a(value: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash
+}
+
+fn monotonic_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "undertone-cache-{}-{}-{}",
+            std::process::id(),
+            tag,
+            monotonic_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn round_trips_a_blob() {
+        let mut cache = BlobCache::new(temp_root("roundtrip"), 1024).unwrap();
+        cache.put("album/1/40x40-16-sixel", b"\x1bP hello").unwrap();
+        assert_eq!(
+            cache.get("album/1/40x40-16-sixel").as_deref(),
+            Some(&b"\x1bP hello"[..])
+        );
+        assert!(cache.contains("album/1/40x40-16-sixel"));
+    }
+
+    #[test]
+    fn missing_keys_are_none() {
+        let cache = BlobCache::new(temp_root("missing"), 1024).unwrap();
+        assert_eq!(cache.get("nope"), None);
+        assert!(!cache.contains("nope"));
+    }
+
+    #[test]
+    fn overwriting_replaces_and_reaccounts() {
+        let mut cache = BlobCache::new(temp_root("overwrite"), 1024).unwrap();
+        cache.put("k", b"0123456789").unwrap();
+        assert_eq!(cache.used_bytes(), 10);
+        cache.put("k", b"abc").unwrap();
+        assert_eq!(cache.used_bytes(), 3);
+        assert_eq!(cache.get("k").as_deref(), Some(&b"abc"[..]));
+    }
+
+    #[test]
+    fn evicts_oldest_until_within_budget() {
+        let mut cache = BlobCache::new(temp_root("evict"), 100).unwrap();
+        cache.put("first", &[1u8; 60]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cache.put("second", &[2u8; 60]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cache.put("third", &[3u8; 60]).unwrap();
+
+        assert!(cache.used_bytes() <= 100, "used {}", cache.used_bytes());
+        assert!(cache.contains("third"), "newest entry must survive");
+        assert!(!cache.contains("first"), "oldest entry must be evicted");
+    }
+
+    #[test]
+    fn a_large_blob_evicts_everything_else() {
+        let mut cache = BlobCache::new(temp_root("bigblob"), 100).unwrap();
+        cache.put("small", &[1u8; 40]).unwrap();
+        cache.put("huge", &[2u8; 90]).unwrap();
+        assert!(cache.contains("huge"));
+        assert!(cache.used_bytes() <= 100);
+    }
+
+    #[test]
+    fn keys_with_separators_are_sanitised() {
+        let name = key_to_filename("al-abc_123/40x40-16-sixel");
+        assert!(!name.contains('/'));
+        assert!(name.ends_with(".blob"));
+        // Distinct keys must not collide into the same file.
+        assert_ne!(key_to_filename("a/b"), key_to_filename("a_b"));
+    }
+
+    #[test]
+    fn very_long_keys_use_a_hash() {
+        let long = "x".repeat(400);
+        let name = key_to_filename(&long);
+        assert!(name.len() < 32);
+        assert!(name.ends_with(".blob"));
+        assert_ne!(name, key_to_filename(&"x".repeat(401)));
+    }
+
+    #[test]
+    fn reopening_recomputes_usage() {
+        let root = temp_root("reopen");
+        {
+            let mut cache = BlobCache::new(&root, 1024).unwrap();
+            cache.put("a", &[0u8; 10]).unwrap();
+            cache.put("b", &[0u8; 20]).unwrap();
+        }
+        let cache = BlobCache::new(&root, 1024).unwrap();
+        assert_eq!(cache.used_bytes(), 30);
+    }
+
+    #[test]
+    fn clear_empties_the_cache() {
+        let mut cache = BlobCache::new(temp_root("clear"), 1024).unwrap();
+        cache.put("a", b"hello").unwrap();
+        cache.clear().unwrap();
+        assert_eq!(cache.used_bytes(), 0);
+        assert!(cache.get("a").is_none());
+    }
+
+    #[test]
+    fn temp_files_are_not_counted_as_blobs() {
+        let mut cache = BlobCache::new(temp_root("tempfiles"), 1024).unwrap();
+        cache.put("a", b"hello").unwrap();
+        // Simulate a crashed writer.
+        fs::write(cache.root().join(".tmp-999-dead"), b"garbage").unwrap();
+        let reopened = BlobCache::new(cache.root(), 1024).unwrap();
+        assert_eq!(reopened.used_bytes(), 5);
+    }
+}
