@@ -11,7 +11,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::art::ArtService;
 use crate::config::Settings;
 use crate::listen_later::ListenLater;
-use crate::player::{LoadMode, Player, PlayerEvent, ScrobbleAction, Scrobbler, Seek, TrackSource};
+use crate::player::{
+    EndReason, LoadMode, Player, PlayerEvent, ScrobbleAction, Scrobbler, Seek, TrackSource,
+};
 use crate::queue::{Queue, QueueItem, Step};
 use crate::render::{ArtProtocol, Painter, Placement};
 use crate::session::Session;
@@ -65,6 +67,11 @@ pub struct NowPlaying {
     /// restored from a previous session is shown, but nothing is loaded yet, so
     /// resuming has to start playback rather than unpause silence.
     pub loaded: bool,
+    /// Queue playback index of playlist entry zero, and how many entries the
+    /// player currently holds. Together they map mpv's playlist position back
+    /// to a place in the queue without either side guessing.
+    pub playlist_base: usize,
+    pub playlist_len: usize,
     pub listened: f64,
     pub scrobbler: Scrobbler,
 }
@@ -77,6 +84,8 @@ impl Default for NowPlaying {
             duration: 0.0,
             paused: true,
             loaded: false,
+            playlist_base: 0,
+            playlist_len: 0,
             listened: 0.0,
             scrobbler: Scrobbler::default(),
         }
@@ -656,22 +665,40 @@ impl App {
     }
 
     pub fn play_current(&mut self) {
-        let Some(item) = self.queue.current().cloned() else {
+        let Some(_) = self.queue.current() else {
             return;
         };
-        let url = self.stream_url(&item.id);
-        let loaded = self.player.load(
-            &[TrackSource {
-                url,
+        let base = self.queue.position().unwrap_or(0);
+        let window: Vec<TrackSource> = self
+            .queue
+            .window(PLAYLIST_WINDOW)
+            .iter()
+            .map(|item| TrackSource {
+                url: self.stream_url(&item.id),
                 title: item.title.clone(),
-            }],
-            LoadMode::Replace,
-        );
-        if let Err(err) = loaded {
+            })
+            .collect();
+        if window.is_empty() {
+            return;
+        }
+
+        if let Err(err) = self.player.load(&window, LoadMode::Replace) {
             self.error(format!("player: {err}"));
             return;
         }
         let _ = self.player.play();
+        self.now.playlist_base = base;
+        self.now.playlist_len = window.len();
+        self.adopt_current();
+    }
+
+    /// Take the queue's current track as what is playing, without touching the
+    /// player. Used when opening a window and when mpv moves to the next entry
+    /// on its own.
+    fn adopt_current(&mut self) {
+        let Some(item) = self.queue.current().cloned() else {
+            return;
+        };
         self.now.track = Some(item.clone());
         self.now.position = 0.0;
         self.now.duration = f64::from(item.duration.unwrap_or(0));
@@ -691,9 +718,67 @@ impl App {
         self.auto_dj_top_up();
     }
 
+    /// Follow mpv when it moves to another playlist entry.
+    ///
+    /// This is what makes playback gapless: the player advances on its own and
+    /// the app keeps its state in step, instead of stopping and reloading
+    /// between tracks.
+    fn follow_playlist(&mut self, index: usize) {
+        let target = self.now.playlist_base + index;
+        if self.queue.position() != Some(target) {
+            if self.queue.jump_to(target).is_none() {
+                return;
+            }
+            self.adopt_current();
+        }
+        self.top_up_playlist(index);
+    }
+
+    /// Keep at least two entries ahead in the player, so the next transition
+    /// needs no network round trip.
+    fn top_up_playlist(&mut self, index: usize) {
+        if index + 2 < self.now.playlist_len {
+            return;
+        }
+        let already = self.now.playlist_len;
+        let extra: Vec<TrackSource> = self
+            .queue
+            .playback_items()
+            .iter()
+            .skip(self.now.playlist_base + already)
+            .take(PLAYLIST_WINDOW)
+            .map(|item| TrackSource {
+                url: self.stream_url(&item.id),
+                title: item.title.clone(),
+            })
+            .collect();
+        if extra.is_empty() {
+            return;
+        }
+        let count = extra.len();
+        if self.player.load(&extra, LoadMode::Append).is_ok() {
+            self.now.playlist_len += count;
+        }
+    }
+
+    /// The player ran out of entries.
+    fn on_playlist_finished(&mut self) {
+        match self.queue.advance() {
+            Step::Advanced | Step::Stayed => self.play_current(),
+            Step::Finished => {
+                self.now.paused = true;
+                self.now.loaded = false;
+                self.status("end of queue");
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ auto dj
 
     /// How few tracks may remain before the queue is topped up.
+    /// Tracks handed to the player at once. Two ahead of what is playing is
+    /// enough for the next transition to be gapless, and cheap in memory: an
+    /// entry is a URL and a title.
     pub const AUTO_DJ_MIN_AHEAD: usize = 2;
     /// How many similar tracks one top-up asks the server for.
     pub const AUTO_DJ_BATCH: u32 = 10;
@@ -882,43 +967,54 @@ impl App {
     /// whenever the event loop wakes.
     pub fn pump(&mut self) {
         for event in self.player.drain_events() {
-            match event {
-                PlayerEvent::Position(position) => {
-                    self.now.position = position;
-                    self.needs_redraw = true;
-                }
-                PlayerEvent::Duration(duration) => {
-                    self.now.duration = duration;
-                    self.needs_redraw = true;
-                }
-                PlayerEvent::Paused(paused) => {
-                    self.now.paused = paused;
-                    self.needs_redraw = true;
-                }
-                PlayerEvent::Ended(reason) => {
-                    if matches!(reason, crate::player::EndReason::Eof) {
-                        match self.queue.advance() {
-                            Step::Advanced | Step::Stayed => self.play_current(),
-                            Step::Finished => {
-                                self.now.paused = true;
-                                self.status("end of queue");
-                            }
-                        }
-                    }
-                }
-                PlayerEvent::Crashed(message) => {
-                    // The player is gone, so nothing is loaded any more: `p`
-                    // must restart the track rather than pause a corpse.
-                    self.now.loaded = false;
-                    self.now.paused = true;
-                    self.error(format!("player crashed: {message}"));
-                }
-                PlayerEvent::FileLoaded | PlayerEvent::Volume(_) | PlayerEvent::Idle => {}
-            }
+            self.on_player_event(event);
         }
 
         if self.art.poll() {
             self.needs_redraw = true;
+        }
+    }
+
+    /// One player event, applied to the app's state.
+    ///
+    /// Separate from `pump` so the dispatch itself can be tested without a
+    /// player that can be poked.
+    pub fn on_player_event(&mut self, event: PlayerEvent) {
+        match event {
+            PlayerEvent::Position(position) => {
+                self.now.position = position;
+                self.needs_redraw = true;
+            }
+            PlayerEvent::Duration(duration) => {
+                self.now.duration = duration;
+                self.needs_redraw = true;
+            }
+            PlayerEvent::Paused(paused) => {
+                self.now.paused = paused;
+                self.needs_redraw = true;
+            }
+            // mpv moved on by itself: this is the gapless transition.
+            PlayerEvent::PlaylistPos(index) => self.follow_playlist(index),
+            // With a window loaded, mpv reports the end of *each* entry and then
+            // moves on by itself; the playlist position is the signal that the
+            // track changed, and `Idle` means it ran out. Advancing on `Ended`
+            // as well would skip a track.
+            PlayerEvent::Ended(reason) => {
+                // `Stop` is what the player reports when we replace its
+                // playlist, so only a real failure is worth a message.
+                if matches!(reason, EndReason::Error | EndReason::Redirect) {
+                    self.error("track failed to play — skipping to the next");
+                }
+            }
+            PlayerEvent::Idle => self.on_playlist_finished(),
+            PlayerEvent::Crashed(message) => {
+                // The player is gone, so nothing is loaded any more: `p` must
+                // restart the track rather than pause a corpse.
+                self.now.loaded = false;
+                self.now.paused = true;
+                self.error(format!("player crashed: {message}"));
+            }
+            PlayerEvent::FileLoaded | PlayerEvent::Volume(_) => {}
         }
     }
 
@@ -1348,6 +1444,13 @@ impl App {
     }
 }
 
+/// How many tracks to hand the player at once.
+///
+/// mpv runs from one entry to the next without reopening the audio device, so
+/// this is what removes the gap between tracks. Three keeps two ahead of the
+/// playing one, which is enough lookahead for a slow stream to start.
+pub const PLAYLIST_WINDOW: usize = 3;
+
 /// How many list rows fit in `height`, at two lines per row.
 fn list_rows(height: u16) -> usize {
     (usize::from(height) / usize::from(ROW_HEIGHT)).max(1)
@@ -1674,6 +1777,120 @@ mod tests {
         let picked = app.unheard(vec![song("b"), song("c"), song("c")]);
         let ids: Vec<&str> = picked.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["c", "c"], "only the unqueued survive");
+    }
+
+    // ---------------------------------------------------------------- gapless
+
+    #[test]
+    fn playing_hands_the_player_a_window_of_tracks() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue
+            .replace((0..5).map(|i| track(&format!("s{i}"))).collect());
+
+        app.play_current();
+
+        assert_eq!(app.now.playlist_len, PLAYLIST_WINDOW);
+        assert_eq!(app.now.playlist_base, 0);
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s0"));
+    }
+
+    #[test]
+    fn following_the_playlist_moves_the_queue_without_a_reload() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue
+            .replace((0..5).map(|i| track(&format!("s{i}"))).collect());
+        app.play_current();
+
+        // What mpv reports when it moves on by itself.
+        app.follow_playlist(1);
+
+        assert_eq!(app.queue.position(), Some(1));
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s1"));
+        assert!(app.now.loaded && !app.now.paused);
+        assert_eq!(app.now.position, 0.0, "the clock restarts with the track");
+    }
+
+    #[test]
+    fn the_window_is_extended_before_it_runs_out() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue
+            .replace((0..10).map(|i| track(&format!("s{i}"))).collect());
+        app.play_current();
+        assert_eq!(app.now.playlist_len, PLAYLIST_WINDOW);
+
+        // Reaching the last entry of the window must queue more.
+        app.follow_playlist(PLAYLIST_WINDOW - 1);
+        assert_eq!(app.now.playlist_len, PLAYLIST_WINDOW * 2);
+    }
+
+    #[test]
+    fn an_exhausted_playlist_advances_and_reopens_a_window() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b")]);
+
+        app.play_current();
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("a"));
+
+        app.on_playlist_finished();
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn the_end_of_the_queue_stops_instead_of_looping() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("only")]);
+        app.play_current();
+
+        app.on_playlist_finished();
+        assert!(!app.now.loaded, "nothing is loaded at the end of the queue");
+        assert!(app.now.paused);
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("end of queue"), "{}", status.text);
+    }
+
+    #[test]
+    fn the_player_tells_the_app_which_entry_it_moved_to() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue
+            .replace((0..5).map(|i| track(&format!("s{i}"))).collect());
+        app.play_current();
+
+        // The exact event mpv sends on a gapless transition.
+        app.on_player_event(PlayerEvent::PlaylistPos(2));
+
+        assert_eq!(app.queue.position(), Some(2));
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s2"));
+    }
+
+    #[test]
+    fn the_end_of_each_file_does_not_advance_the_queue() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue
+            .replace((0..5).map(|i| track(&format!("s{i}"))).collect());
+        app.play_current();
+
+        // mpv reports the end of every entry; the playlist position is what
+        // marks the transition, so this must be inert.
+        app.on_player_event(PlayerEvent::Ended(EndReason::Eof));
+
+        assert_eq!(app.queue.position(), Some(0));
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s0"));
+    }
+
+    #[test]
+    fn a_failed_track_is_reported_rather_than_silently_skipped() {
+        let mut app = app();
+        app.on_player_event(PlayerEvent::Ended(EndReason::Error));
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("failed to play"), "{}", status.text);
+        assert!(status.error);
     }
 
     // --------------------------------------------------------------- session

@@ -78,6 +78,10 @@ impl MpvPlayer {
             .arg("--no-osd-bar")
             .arg("--really-quiet")
             .arg("--no-terminal")
+            // Gapless: hand mpv several tracks and let it run from one to the
+            // next without reopening the audio device.
+            .arg("--gapless-audio=yes")
+            .arg("--prefetch-playlist=yes")
             .arg("--demuxer-max-bytes=8MiB")
             .arg("--demuxer-max-back-bytes=2MiB")
             .arg("--cache-secs=20")
@@ -146,6 +150,9 @@ impl MpvPlayer {
             (2, "duration"),
             (3, "pause"),
             (4, "volume"),
+            // Which entry of the handed-over playlist is playing. Without this
+            // the app cannot tell that mpv moved on gaplessly.
+            (5, "playlist-pos"),
         ] {
             player.send_line(&encode_observe(id, property))?;
         }
@@ -193,11 +200,13 @@ fn connect_with_timeout(path: &Path) -> Result<UnixStream, PlayerError> {
 
 impl Player for MpvPlayer {
     fn load(&mut self, tracks: &[TrackSource], mode: LoadMode) -> Result<(), PlayerError> {
-        let target = match mode {
-            LoadMode::Replace => "replace",
-            LoadMode::Append => "append",
-        };
-        for track in tracks {
+        // Only the first track can replace: sending "replace" for every entry
+        // would restart the playlist for each one and play only the last.
+        for (index, track) in tracks.iter().enumerate() {
+            let target = match (mode, index) {
+                (LoadMode::Replace, 0) => "replace",
+                _ => "append",
+            };
             self.command(&["loadfile", &track.url, target])?;
         }
         Ok(())
@@ -330,6 +339,59 @@ mod tests {
     }
 
     #[test]
+    fn a_two_track_window_advances_gaplessly() {
+        if !mpv_available() {
+            eprintln!("skipping: mpv not on PATH");
+            return;
+        }
+        // Two distinct files, so mpv really moves from one to the other.
+        let first = wav_fixture(1);
+        let second = std::env::temp_dir().join("undertone-test-1s-b.wav");
+        std::fs::copy(&first, &second).expect("copy fixture");
+
+        let options = MpvOptions {
+            audio_output: Some("null".to_string()),
+            socket_path: std::env::temp_dir()
+                .join(format!("undertone-gapless-{}.sock", std::process::id())),
+            ..Default::default()
+        };
+        let mut player = MpvPlayer::spawn(&options).expect("spawn mpv");
+        player
+            .load(
+                &[
+                    TrackSource {
+                        url: format!("file://{}", first.display()),
+                        title: "first".into(),
+                    },
+                    TrackSource {
+                        url: format!("file://{}", second.display()),
+                        title: "second".into(),
+                    },
+                ],
+                LoadMode::Replace,
+            )
+            .expect("load");
+        player.play().expect("play");
+
+        // The whole point: mpv reports the second entry itself, without the app
+        // reloading anything.
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && !seen.contains(&1usize) {
+            for event in player.drain_events() {
+                if let PlayerEvent::PlaylistPos(position) = event {
+                    seen.push(position);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            seen.contains(&1),
+            "mpv should have advanced to the second entry by itself: {seen:?}"
+        );
+        player.shutdown();
+    }
+    #[test]
     fn spawns_and_plays_a_file_through_a_null_sink() {
         if !mpv_available() {
             eprintln!("skipping: mpv not on PATH");
@@ -337,6 +399,10 @@ mod tests {
         }
         let options = MpvOptions {
             audio_output: Some("null".to_string()),
+            // Its own socket: two mpv tests sharing one would delete each
+            // other's and hang.
+            socket_path: std::env::temp_dir()
+                .join(format!("undertone-test-{}.sock", std::process::id())),
             ..Default::default()
         };
         let mut player = MpvPlayer::spawn(&options).expect("spawn mpv");

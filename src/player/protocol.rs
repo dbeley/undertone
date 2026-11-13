@@ -39,6 +39,10 @@ pub fn parse_event(line: &str) -> Option<PlayerEvent> {
                 "duration" => data.as_f64().map(PlayerEvent::Duration),
                 "pause" => data.as_bool().map(PlayerEvent::Paused),
                 "volume" => data.as_f64().map(PlayerEvent::Volume),
+                "playlist-pos" => data
+                    .as_i64()
+                    .filter(|pos| *pos >= 0)
+                    .map(|pos| PlayerEvent::PlaylistPos(pos as usize)),
                 _ => None,
             }
         }
@@ -150,5 +154,17 @@ mod tests {
         );
         assert_eq!(parse_event("not json"), None);
         assert_eq!(parse_event(""), None);
+    }
+
+    #[test]
+    fn playlist_position_ignores_the_empty_playlist_value() {
+        // mpv reports -1 while the playlist is empty; that is not a position.
+        assert!(
+            parse_event(r#"{"event":"property-change","name":"playlist-pos","data":-1}"#).is_none()
+        );
+        assert!(matches!(
+            parse_event(r#"{"event":"property-change","name":"playlist-pos","data":2}"#),
+            Some(PlayerEvent::PlaylistPos(2))
+        ));
     }
 }

@@ -156,6 +156,18 @@ impl Queue {
         self.order.get(pos).copied()
     }
 
+    /// The current track and the `count - 1` after it, in playback order.
+    ///
+    /// This is what gets handed to the player: a window it can run through
+    /// without asking the app for the next track.
+    pub fn window(&self, count: usize) -> Vec<&QueueItem> {
+        let mut items = self.playback_items();
+        let start = self.pos.unwrap_or(0);
+        items.drain(..start.min(items.len()));
+        items.truncate(count);
+        items
+    }
+
     /// The next `limit` tracks in playback order, for the now-playing bar.
     ///
     /// Does not wrap: with nothing left to play the caller shows nothing,
@@ -590,6 +602,18 @@ mod tests {
         assert_permutation(&queue);
     }
 
+    #[test]
+    fn a_window_starts_at_the_current_track() {
+        let mut queue = queue_of(&["a", "b", "c", "d"]);
+        let ids =
+            |items: Vec<&QueueItem>| items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+
+        assert_eq!(ids(queue.window(3)), vec!["a", "b", "c"]);
+        queue.advance();
+        assert_eq!(ids(queue.window(3)), vec!["b", "c", "d"]);
+        // Shorter than the request when the queue runs out.
+        assert_eq!(ids(queue.window(10)), vec!["b", "c", "d"]);
+    }
     #[test]
     fn upcoming_lists_what_follows_the_current_track() {
         let mut queue = queue_of(&["a", "b", "c", "d"]);

@@ -19,6 +19,7 @@ Phases 0–5 complete and merged (flake, CI, Subsonic transport, typed endpoints
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | Audio = mpv subprocess over JSON IPC | All codecs, gapless, correct seek, crash isolation. **Budget cost 66 MB — see D1-open.** |
+| D1a | Playback is a playlist window of three, followed by `playlist-pos` | mpv gaplessly advances inside a window, which removes the inter-track gap that per-track `loadfile` cannot. The app maps mpv's playlist index back to a queue position, so `next`/`previous`/shuffle still belong to the app. Window growth is bounded (one URL string per entry) and topped up two entries ahead. |
 | D2 | Language = Rust | No GC, flat RSS, clean armv7/aarch64 cross-compile. |
 | D3 | No local metadata index | Server-side `search3` + paginated `albumList2` + TTL RAM cache cover it. Avoids schema/versioning/staleness bugs. |
 | D4 | Scope = full Covertone identity | Discovery pane, Auto DJ, Listen Later, random-first sorting. |
@@ -419,6 +420,9 @@ Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic
 - `src/listen_later.rs`: local JSON at `$XDG_DATA_HOME/undertone/listen-later.json`, atomic write, dedupe by album id.
 - Tests: add/remove/dedupe, corrupt file → empty list + warning, atomic write survives a simulated partial write.
 
+**Task 5.5 — Gapless playback**
+- Hand the player a window of tracks and follow its playlist position; top the window up before it runs out. `Ended` becomes informational (mpv reports the end of every entry), and `Idle` means the window ran out.
+
 **Task 5.4 — Session restore + config**
 - `src/config.rs` completion + session state file (queue, index, position, view).
 - Tests: round-trip; missing/corrupt session → clean start; config precedence (CLI > cmd > file); 0600 permission warning.
@@ -450,7 +454,7 @@ Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic
 | Render | `TestBackend` + recorded fixtures | row/detail layout, placement rects |
 | Perf | `tests/perf.rs` | startup, RSS, redraw time, cache hit |
 | Nix | `nix flake check`, `nix build` | package builds, module evaluates, binary size gate |
-| Manual | device | real foot sixel on the Pi 2, scroll smoothness, audio gapless |
+| Manual | device | real foot sixel on the Pi 2, scroll smoothness, audio device handover |
 
 Renderer fixtures are recorded from real `chafa` output and committed, so tests do not require chafa at test time.
 

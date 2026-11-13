@@ -69,6 +69,9 @@ pub enum PlayerEvent {
     Position(f64),
     Paused(bool),
     Volume(f64),
+    /// Which playlist entry is playing now. The app uses this to follow mpv
+    /// across a gapless transition instead of reloading the next track itself.
+    PlaylistPos(usize),
     /// The playlist finished and mpv is idle.
     Idle,
     Ended(EndReason),

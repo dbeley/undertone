@@ -24,7 +24,10 @@ daemon:
 
 ## Design in one paragraph
 
-Audio plays through an `mpv` subprocess over JSON IPC. Album art is fetched
+Audio plays through an `mpv` subprocess over JSON IPC, handed a window of three
+tracks at a time so it runs from one to the next without reopening the audio
+device; the app follows mpv's playlist position instead of stopping and
+reloading between tracks. Album art is fetched
 pre-scaled from the server, encoded to sixel (foot) or kitty graphics
 (kitty/ghostty) by `chafa` in a background worker, cached on disk as final
 escape bytes, and reconciled onto the screen by a painter that emits zero bytes
