@@ -18,8 +18,8 @@ use ratatui::Frame;
 use ratatui::Terminal;
 
 use crate::app::{
-    AlbumLayout, App, View, GRID_THUMB_H, GRID_THUMB_W, GRID_TILE_H, GRID_TILE_W, ROW_HEIGHT,
-    THUMB_CELLS, THUMB_ROWS,
+    AlbumLayout, App, ArtistPane, View, GRID_THUMB_H, GRID_THUMB_W, GRID_TILE_H, GRID_TILE_W,
+    ROW_HEIGHT, THUMB_CELLS, THUMB_ROWS,
 };
 use crate::art::ArtService;
 use crate::render::{
@@ -836,28 +836,53 @@ fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
     let Some(artist) = app.artist_detail.as_ref() else {
         return;
     };
-    // Two rows for the header keeps the album rows on the same two-line grid
-    // as everywhere else.
-    let albums_area = artist_albums_area(area);
-    let header = Rect {
-        height: albums_area.y - area.y,
-        ..area
-    };
-    let count = match artist.album.len() {
-        1 => "1 album".to_string(),
-        n => format!("{n} albums"),
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(artist.name.clone(), title_style())),
-            Line::from(Span::styled(
-                format!("{count}   — Enter to open, h back"),
-                Style::default().fg(MUTED),
-            )),
-        ]),
-        header,
+
+    let panes = artist_pane_rects(area);
+    draw_pane_title(
+        frame,
+        "albums",
+        panes.albums,
+        app.artist_pane == ArtistPane::Albums,
+    );
+    draw_pane_title(
+        frame,
+        "similar",
+        panes.similar,
+        app.artist_pane == ArtistPane::Similar,
+    );
+    draw_pane_title(
+        frame,
+        "biography",
+        panes.biography,
+        app.artist_pane == ArtistPane::Biography,
     );
 
+    // Rules between the panes: the same one-column divider the rail uses, so a
+    // narrow pane does not look like text that ran out of room.
+    if let Some(rule) = panes.vertical_rule {
+        for y in rule.y..rule.y + rule.height {
+            frame.render_widget(
+                Paragraph::new(Span::styled("│", Style::default().fg(MUTED))),
+                Rect {
+                    x: rule.x,
+                    y,
+                    width: 1,
+                    height: 1,
+                },
+            );
+        }
+    }
+    if let Some(rule) = panes.horizontal_rule {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "─".repeat(usize::from(rule.width)),
+                Style::default().fg(MUTED),
+            )),
+            rule,
+        );
+    }
+
+    let albums_area = panes.albums_body();
     for slot in 0..visible_albums(albums_area) {
         let index = app.artist_album_scroll + slot;
         let Some(album) = artist.album.get(index) else {
@@ -881,6 +906,235 @@ fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
             album.starred.is_some(),
         );
     }
+
+    draw_similar_pane(frame, app, panes.similar_body());
+    draw_biography_pane(frame, app, panes.biography_body());
+}
+
+/// Similar artists, as a plain list: they are names, not covers.
+fn draw_similar_pane(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(info) = app.artist_info.as_ref() else {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no artist info", Style::default().fg(MUTED))),
+            area,
+        );
+        return;
+    };
+    if info.similar_artist.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("none known", Style::default().fg(MUTED))),
+            area,
+        );
+        return;
+    }
+
+    let rows = usize::from(area.height);
+    let offset = app
+        .artist_similar_selected
+        .saturating_sub(rows.saturating_sub(1));
+    for slot in 0..rows {
+        let index = offset + slot;
+        let Some(artist) = info.similar_artist.get(index) else {
+            break;
+        };
+        let selected =
+            index == app.artist_similar_selected && app.artist_pane == ArtistPane::Similar;
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncate_chars(&artist.name, usize::from(area.width)),
+                if selected {
+                    selected_style()
+                } else {
+                    Style::default()
+                },
+            ))),
+            Rect {
+                x: area.x,
+                y: area.y + slot as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// The biography, wrapped into its column.
+fn draw_biography_pane(frame: &mut Frame, app: &App, area: Rect) {
+    let text = app
+        .artist_info
+        .as_ref()
+        .and_then(|info| info.biography.as_deref())
+        .unwrap_or("");
+    if text.trim().is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no biography", Style::default().fg(MUTED))),
+            area,
+        );
+        return;
+    }
+
+    let width = usize::from(area.width).max(1);
+    let lines = wrap(text, width);
+    for slot in 0..usize::from(area.height) {
+        let index = app.artist_bio_scroll + slot;
+        let Some(line) = lines.get(index) else {
+            break;
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                line.clone(),
+                Style::default().fg(Color::Gray),
+            ))),
+            Rect {
+                x: area.x,
+                y: area.y + slot as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// Greedy word wrap, because the biography arrives as one long paragraph and
+/// ratatui would otherwise truncate it at the pane edge.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if line.is_empty() {
+                line.push_str(word);
+            } else if line.chars().count() + 1 + word.chars().count() <= width {
+                line.push(' ');
+                line.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut line));
+                line.push_str(word);
+            }
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// Geometry of the artist page: albums on the left, similar artists and the
+/// biography stacked on the right.
+struct ArtistPanes {
+    albums: Rect,
+    similar: Rect,
+    biography: Rect,
+    vertical_rule: Option<Rect>,
+    horizontal_rule: Option<Rect>,
+}
+
+impl ArtistPanes {
+    fn albums_body(&self) -> Rect {
+        Rect {
+            y: self.albums.y + 1,
+            height: self.albums.height.saturating_sub(1),
+            ..self.albums
+        }
+    }
+
+    fn similar_body(&self) -> Rect {
+        Rect {
+            y: self.similar.y + 1,
+            height: self.similar.height.saturating_sub(1),
+            ..self.similar
+        }
+    }
+
+    fn biography_body(&self) -> Rect {
+        Rect {
+            y: self.biography.y + 1,
+            height: self.biography.height.saturating_sub(1),
+            ..self.biography
+        }
+    }
+}
+
+fn artist_pane_rects(area: Rect) -> ArtistPanes {
+    // Below this the three panes stop being readable; the albums take the
+    // width and the rest goes underneath.
+    if area.width < 72 {
+        let albums_h = (area.height * 6 / 10).max(4);
+        return ArtistPanes {
+            albums: Rect {
+                height: albums_h,
+                ..area
+            },
+            similar: Rect {
+                y: area.y + albums_h + 1,
+                height: 3,
+                ..area
+            },
+            biography: Rect {
+                y: area.y + albums_h + 5,
+                height: area.height.saturating_sub(albums_h + 5),
+                ..area
+            },
+            vertical_rule: None,
+            horizontal_rule: None,
+        };
+    }
+
+    let left_w = (area.width * 52 / 100).max(28);
+    let rule_x = area.x + left_w;
+    let right_x = rule_x + 2;
+    let right_w = area.width.saturating_sub(left_w + 2);
+    let similar_h = (area.height / 2).max(3);
+
+    ArtistPanes {
+        albums: Rect {
+            x: area.x,
+            width: left_w,
+            ..area
+        },
+        similar: Rect {
+            x: right_x,
+            y: area.y,
+            width: right_w,
+            height: similar_h,
+        },
+        biography: Rect {
+            x: right_x,
+            y: area.y + similar_h + 1,
+            width: right_w,
+            height: area.height.saturating_sub(similar_h + 1),
+        },
+        vertical_rule: Some(Rect {
+            x: rule_x,
+            y: area.y,
+            width: 1,
+            height: area.height,
+        }),
+        horizontal_rule: Some(Rect {
+            x: right_x,
+            y: area.y + similar_h,
+            width: right_w,
+            height: 1,
+        }),
+    }
+}
+
+/// A pane's name on its first row; the focused pane's is bright.
+fn draw_pane_title(frame: &mut Frame, label: &str, pane: Rect, focused: bool) {
+    let style = if focused {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(MUTED)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(label.to_string(), style))),
+        Rect {
+            x: pane.x,
+            y: pane.y,
+            width: pane.width.min(label.chars().count() as u16 + 1),
+            height: 1,
+        },
+    );
 }
 
 fn draw_favorites(frame: &mut Frame, app: &App, area: Rect) {
@@ -1566,9 +1820,9 @@ fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
 fn key_hints(view: View) -> &'static str {
     match view {
         View::Albums => "S sort · w grid · Enter · * star · ? help",
-        View::AlbumDetail => "Enter play · * star · h back",
+        View::AlbumDetail => "Enter play · * star · A artist · h back",
         View::Artists => "S sort · Enter open · h back",
-        View::ArtistDetail => "Enter open · * star · h back",
+        View::ArtistDetail => "Tab pane · Enter open · * star · h back",
         View::Favorites => "Enter open · * unstar · h back",
         View::ListenLater => "a remove · Enter open · h back",
         View::Playlists => "Enter open · h back",
@@ -2119,13 +2373,67 @@ mod tests {
             ..Default::default()
         });
         app.view = View::ArtistDetail;
-        let text = rendered_text(&app, 80, 24);
+        // Wide enough for the three-pane layout.
+        let text = rendered_text(&app, 100, 24);
         assert!(text.contains("Aphex Twin"), "{text}");
-        assert!(text.contains("2 albums"), "{text}");
+        assert!(text.contains("album 1"), "{text}");
+        assert!(text.contains("albums"), "the pane is titled: {text}");
+        assert!(text.contains("similar"), "{text}");
+        assert!(text.contains("biography"), "{text}");
+        // The keys live in the bar now, not above the list.
         assert!(
-            text.contains("Enter to open"),
-            "the page should say how to open: {text}"
+            !text.contains("Enter to open"),
+            "the page must not repeat the keybindings: {text}"
         );
+    }
+
+    #[test]
+    fn the_artist_page_shows_similar_artists_and_the_biography() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Aphex Twin".into(),
+            album: vec![album_with_cover("1")],
+            ..Default::default()
+        });
+        app.artist_info = Some(crate::subsonic::ArtistInfo {
+            biography: Some("Richard David James records as Aphex Twin.".into()),
+            similar_artist: vec![
+                crate::subsonic::Artist {
+                    id: "ar-2".into(),
+                    name: "Boards of Canada".into(),
+                    ..Default::default()
+                },
+                crate::subsonic::Artist {
+                    id: "ar-3".into(),
+                    name: "Autechre".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        app.view = View::ArtistDetail;
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("Boards of Canada"), "{text}");
+        assert!(text.contains("Autechre"), "{text}");
+        assert!(text.contains("Richard David James"), "{text}");
+    }
+
+    #[test]
+    fn a_missing_artist_info_leaves_the_page_usable() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Aphex Twin".into(),
+            album: vec![album_with_cover("1")],
+            ..Default::default()
+        });
+        app.view = View::ArtistDetail;
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("album 1"), "the albums still list: {text}");
+        assert!(text.contains("no artist info"), "{text}");
     }
 
     #[test]

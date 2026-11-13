@@ -18,7 +18,8 @@ use crate::queue::{Queue, QueueItem, Repeat, Step};
 use crate::render::{ArtProtocol, Painter, Placement};
 use crate::session::Session;
 use crate::subsonic::{
-    Album, AlbumListQuery, AlbumListType, Artist, ArtistDetail, Playlist, Song, SubsonicClient,
+    Album, AlbumListQuery, AlbumListType, Artist, ArtistDetail, ArtistInfo, Playlist, Song,
+    SubsonicClient,
 };
 
 /// Cells a thumbnail occupies in the album list.
@@ -43,6 +44,33 @@ pub enum View {
     PlaylistDetail,
     Search,
     Help,
+}
+
+/// Which of the artist page's three panes has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtistPane {
+    #[default]
+    Albums,
+    Similar,
+    Biography,
+}
+
+impl ArtistPane {
+    pub fn next(self) -> Self {
+        match self {
+            ArtistPane::Albums => ArtistPane::Similar,
+            ArtistPane::Similar => ArtistPane::Biography,
+            ArtistPane::Biography => ArtistPane::Albums,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            ArtistPane::Albums => ArtistPane::Biography,
+            ArtistPane::Similar => ArtistPane::Albums,
+            ArtistPane::Biography => ArtistPane::Similar,
+        }
+    }
 }
 
 /// One row of a search: albums open, songs play.
@@ -218,8 +246,13 @@ pub struct App {
     /// Artist id -> position in the server's most-played album list. Built once,
     /// on demand: it costs a request, so it only happens if you pick that sort.
     pub artist_play_rank: std::collections::HashMap<String, usize>,
-    /// The open artist's albums.
+    /// The open artist: albums, plus the biography and similar artists that
+    /// come from a second, optional request.
     pub artist_detail: Option<ArtistDetail>,
+    pub artist_info: Option<ArtistInfo>,
+    pub artist_pane: ArtistPane,
+    pub artist_similar_selected: usize,
+    pub artist_bio_scroll: usize,
     /// The server's playlists, and the one being looked at.
     pub playlists: Vec<Playlist>,
     pub playlist_detail: Option<Playlist>,
@@ -300,6 +333,10 @@ impl App {
             artist_sort: ArtistSort::default(),
             artist_play_rank: std::collections::HashMap::new(),
             artist_detail: None,
+            artist_info: None,
+            artist_pane: ArtistPane::default(),
+            artist_similar_selected: 0,
+            artist_bio_scroll: 0,
             playlists: Vec::new(),
             playlist_detail: None,
             playlist_selected: 0,
@@ -672,15 +709,41 @@ impl App {
         let Some(artist) = self.artists.get(self.artist_selected).cloned() else {
             return;
         };
-        match self.client.artist(&artist.id) {
+        self.open_artist(&artist.id, &artist.name);
+    }
+
+    /// Open an artist by id, from wherever it was named.
+    ///
+    /// The albums come from `getArtist` and are required; the biography and
+    /// similar artists come from `getArtistInfo2` and are not. A server without
+    /// that endpoint (or without Last.fm data) still gets a usable page.
+    pub fn open_artist(&mut self, id: &str, name: &str) {
+        match self.client.artist(id) {
             Ok(detail) => {
                 self.artist_detail = Some(detail);
                 self.artist_album_selected = 0;
                 self.artist_album_scroll = 0;
+                self.artist_pane = ArtistPane::Albums;
+                self.artist_similar_selected = 0;
+                self.artist_bio_scroll = 0;
+                self.artist_info = self.client.artist_info(id).ok();
                 self.set_view(View::ArtistDetail);
             }
-            Err(err) => self.error(format!("could not open {}: {err}", artist.name)),
+            Err(err) => self.error(format!("could not open {name}: {err}")),
         }
+    }
+
+    /// `A` on an album: the artist behind it.
+    pub fn open_album_artist(&mut self) {
+        let Some(album) = self.detail.as_ref() else {
+            return;
+        };
+        let Some(id) = album.artist_id.clone() else {
+            self.status("this album names no artist");
+            return;
+        };
+        let name = album.artist.clone().unwrap_or_default();
+        self.open_artist(&id, &name);
     }
 
     // ------------------------------------------------------------- favourites
@@ -1325,7 +1388,16 @@ impl App {
             }
             KeyCode::Char('w') if self.view == View::Albums => self.toggle_layout(),
             KeyCode::Char('a') => self.toggle_listen_later(),
+            KeyCode::Tab if self.view == View::ArtistDetail => {
+                self.artist_pane = self.artist_pane.next()
+            }
+            KeyCode::BackTab if self.view == View::ArtistDetail => {
+                self.artist_pane = self.artist_pane.prev()
+            }
             KeyCode::Char('L') => self.open_listen_later(),
+            // On an album, `A` is the artist behind it; everywhere else it is
+            // the artist list.
+            KeyCode::Char('A') if self.view == View::AlbumDetail => self.open_album_artist(),
             KeyCode::Char('A') => self.open_artists(),
             KeyCode::Char('F') => self.open_favorites(),
             // The rail, with explicit jumps.
@@ -1376,11 +1448,24 @@ impl App {
                 .map(|album| album.song.len())
                 .unwrap_or(0),
             View::Artists => self.artists.len(),
-            View::ArtistDetail => self
-                .artist_detail
-                .as_ref()
-                .map(|artist| artist.album.len())
-                .unwrap_or(0),
+            View::ArtistDetail => match self.artist_pane {
+                ArtistPane::Albums => self
+                    .artist_detail
+                    .as_ref()
+                    .map(|artist| artist.album.len())
+                    .unwrap_or(0),
+                ArtistPane::Similar => self
+                    .artist_info
+                    .as_ref()
+                    .map(|info| info.similar_artist.len())
+                    .unwrap_or(0),
+                ArtistPane::Biography => self
+                    .artist_info
+                    .as_ref()
+                    .and_then(|info| info.biography.as_deref())
+                    .map(|text| text.lines().count())
+                    .unwrap_or(0),
+            },
             View::Favorites => self.favorites.len(),
             View::Queue => self.queue.len(),
             View::ListenLater => self.listen_albums.len(),
@@ -1400,7 +1485,11 @@ impl App {
             View::Albums => self.selected,
             View::AlbumDetail => self.detail_selected,
             View::Artists => self.artist_selected,
-            View::ArtistDetail => self.artist_album_selected,
+            View::ArtistDetail => match self.artist_pane {
+                ArtistPane::Albums => self.artist_album_selected,
+                ArtistPane::Similar => self.artist_similar_selected,
+                ArtistPane::Biography => self.artist_bio_scroll,
+            },
             View::Favorites => self.favorite_selected,
             View::Queue => self.queue.position().unwrap_or(0),
             View::ListenLater => self.listen_selected,
@@ -1446,7 +1535,11 @@ impl App {
             }
             View::AlbumDetail => self.detail_selected = next,
             View::Artists => self.artist_selected = next,
-            View::ArtistDetail => self.artist_album_selected = next,
+            View::ArtistDetail => match self.artist_pane {
+                ArtistPane::Albums => self.artist_album_selected = next,
+                ArtistPane::Similar => self.artist_similar_selected = next,
+                ArtistPane::Biography => self.artist_bio_scroll = next,
+            },
             View::Favorites => self.favorite_selected = next,
             View::Queue => {
                 self.queue.jump_to(next);
@@ -1471,7 +1564,11 @@ impl App {
             }
             View::AlbumDetail => self.detail_selected = next,
             View::Artists => self.artist_selected = next,
-            View::ArtistDetail => self.artist_album_selected = next,
+            View::ArtistDetail => match self.artist_pane {
+                ArtistPane::Albums => self.artist_album_selected = next,
+                ArtistPane::Similar => self.artist_similar_selected = next,
+                ArtistPane::Biography => self.artist_bio_scroll = next,
+            },
             View::Favorites => self.favorite_selected = next,
             View::Queue => {
                 self.queue.jump_to(next);
@@ -1524,16 +1621,30 @@ impl App {
                 }
                 None => {}
             },
-            View::ArtistDetail => {
-                let album = self
-                    .artist_detail
-                    .as_ref()
-                    .and_then(|artist| artist.album.get(self.artist_album_selected))
-                    .cloned();
-                if let Some(album) = album {
-                    self.open_album(album);
+            View::ArtistDetail => match self.artist_pane {
+                ArtistPane::Albums => {
+                    let album = self
+                        .artist_detail
+                        .as_ref()
+                        .and_then(|artist| artist.album.get(self.artist_album_selected))
+                        .cloned();
+                    if let Some(album) = album {
+                        self.open_album(album);
+                    }
                 }
-            }
+                ArtistPane::Similar => {
+                    let similar = self
+                        .artist_info
+                        .as_ref()
+                        .and_then(|info| info.similar_artist.get(self.artist_similar_selected))
+                        .cloned();
+                    if let Some(artist) = similar {
+                        self.open_artist(&artist.id, &artist.name);
+                    }
+                }
+                // A biography has nothing to open.
+                ArtistPane::Biography => {}
+            },
             View::Favorites => {
                 if let Some(album) = self.favorites.get(self.favorite_selected).cloned() {
                     self.open_album(album);
@@ -2301,6 +2412,109 @@ mod tests {
         });
 
         assert_eq!(app.view, View::Albums, "an album detail is not restorable");
+    }
+
+    // ------------------------------------------------------------- artist page
+
+    fn artist_page_app() -> App {
+        let mut app = app();
+        app.artist_detail = Some(ArtistDetail {
+            id: "ar-1".into(),
+            name: "Aphex Twin".into(),
+            album: vec![Album {
+                id: "al-1".into(),
+                name: "Selected Ambient Works".into(),
+                artist_id: Some("ar-1".into()),
+                artist: Some("Aphex Twin".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        app.artist_info = Some(ArtistInfo {
+            biography: Some("Richard D. James.\nSecond paragraph.".into()),
+            similar_artist: vec![
+                Artist {
+                    id: "ar-2".into(),
+                    name: "Boards of Canada".into(),
+                    ..Default::default()
+                },
+                Artist {
+                    id: "ar-3".into(),
+                    name: "Autechre".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        app.view = View::ArtistDetail;
+        app
+    }
+
+    #[test]
+    fn tab_moves_between_the_artist_panes() {
+        let mut app = artist_page_app();
+        assert_eq!(app.artist_pane, ArtistPane::Albums);
+
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.artist_pane, ArtistPane::Similar);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.artist_pane, ArtistPane::Biography);
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.artist_pane, ArtistPane::Albums);
+        // And backwards.
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.artist_pane, ArtistPane::Biography);
+    }
+
+    #[test]
+    fn the_cursor_follows_the_focused_pane() {
+        let mut app = artist_page_app();
+        app.handle_key(key(KeyCode::Tab)); // similar
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.artist_similar_selected, 1);
+        assert_eq!(app.artist_album_selected, 0, "the album cursor stays put");
+
+        app.handle_key(key(KeyCode::Tab)); // biography
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.artist_bio_scroll, 1);
+    }
+
+    #[test]
+    fn a_biography_has_nothing_to_open() {
+        let mut app = artist_page_app();
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Tab)); // biography
+        app.handle_key(key(KeyCode::Enter));
+
+        // Still on the artist page: Enter did not navigate anywhere.
+        assert_eq!(app.view, View::ArtistDetail);
+    }
+
+    #[test]
+    fn a_names_the_artist_of_the_open_album() {
+        let mut app = app();
+        app.detail = Some(Album {
+            id: "al-1".into(),
+            name: "No Artist Field".into(),
+            artist_id: None,
+            ..Default::default()
+        });
+        app.view = View::AlbumDetail;
+
+        app.handle_key(key(KeyCode::Char('A')));
+
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("names no artist"), "{}", status.text);
+    }
+
+    #[test]
+    fn a_still_opens_the_artist_list_from_elsewhere() {
+        let mut app = app();
+        app.view = View::Albums;
+        // No network here: opening the list will fail and report it, which is
+        // enough to show the key still routes to the list rather than the page.
+        app.handle_key(key(KeyCode::Char('A')));
+        assert_ne!(app.view, View::ArtistDetail);
     }
 
     // --------------------------------------------------------------- session

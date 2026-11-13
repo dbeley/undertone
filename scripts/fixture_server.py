@@ -126,6 +126,18 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 ]
             }
+        elif endpoint == "getArtistInfo2":
+            response["artistInfo2"] = {
+                "biography": (
+                    "A fixture artist, here so the biography pane has something "
+                    "to wrap. The text is long enough to need several lines in a "
+                    "narrow column, which is the case the wrap is for."
+                ),
+                "similarArtist": [
+                    {"id": "ar-2", "name": "Similar One", "albumCount": 2},
+                    {"id": "ar-3", "name": "Similar Two", "albumCount": 1},
+                ],
+            }
         elif endpoint == "getArtist":
             response["artist"] = {"id": "ar-1", "name": "Test Artist", "album": ALBUMS}
         elif endpoint == "getStarred2":

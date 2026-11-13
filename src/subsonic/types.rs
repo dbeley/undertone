@@ -175,6 +175,9 @@ pub struct ArtistDetail {
 pub struct ArtistInfo {
     #[serde(default)]
     pub biography: Option<String>,
+    /// Artists the server considers close to this one.
+    #[serde(default)]
+    pub similar_artist: Vec<Artist>,
     #[serde(default)]
     pub music_brainz_id: Option<String>,
     #[serde(default)]
