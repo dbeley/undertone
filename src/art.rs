@@ -103,7 +103,7 @@ impl ArtService {
         if self.blobs.contains_key(&key)
             || self.requested.contains(&key)
             || self.failed.contains(&key)
-            || !self.protocol.is_pixel()
+            || matches!(self.protocol, ArtProtocol::Off)
         {
             return key;
         }
@@ -276,7 +276,8 @@ mod tests {
     }
 
     #[test]
-    fn symbols_mode_never_requests_rendering() {
+    fn symbols_mode_renders_its_own_kind_of_art() {
+        // Symbol art is cells, not pixels, but it still has to be encoded.
         let (service, _) = service("symbols");
         let mut service = ArtService {
             protocol: ArtProtocol::Symbols,
@@ -284,6 +285,18 @@ mod tests {
         };
         let key = service.request("al-1", 4, 3, 16, false);
         assert!(key.contains("symbols"));
+        assert_eq!(service.pending(), 1);
+        service.shutdown();
+    }
+
+    #[test]
+    fn art_off_requests_nothing_at_all() {
+        let (service, _) = service("off");
+        let mut service = ArtService {
+            protocol: ArtProtocol::Off,
+            ..service
+        };
+        service.request("al-1", 4, 3, 16, false);
         assert_eq!(service.pending(), 0);
         service.shutdown();
     }

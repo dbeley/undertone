@@ -77,7 +77,9 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut protocol = resolve_protocol(&args, &settings);
 
     let make_source = |protocol: ArtProtocol| -> Option<Arc<dyn ImageSource>> {
-        if protocol.is_pixel() {
+        // Symbol art is encoded from the same downloaded cover; only "off"
+        // needs no images at all.
+        if !matches!(protocol, ArtProtocol::Off) {
             // Ask the server for pre-scaled art so the weak device never
             // decodes a full-size image.
             Some(Arc::new(SubsonicImageSource::new(client.clone())))

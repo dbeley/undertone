@@ -28,6 +28,11 @@ jobs:
         run: nix develop -c cargo test --release --test perf
       - name: build
         run: nix build .# --print-build-logs
+      - name: degradation matrix
+        # Real pty, real binary, real screen: art protocol per setting, narrow
+        # and tiny layouts, dead server, missing helpers. Uses the fixture
+        # server, so it needs no network.
+        run: nix develop -c python3 scripts/degradation.py result/bin/undertone
       - name: binary size gate
         run: |
           size=$(stat -c%s result/bin/undertone)

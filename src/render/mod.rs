@@ -11,6 +11,7 @@ pub mod clear;
 mod images;
 mod painter;
 mod protocol;
+pub mod symbols;
 mod worker;
 
 pub use cache::BlobCache;

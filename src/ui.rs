@@ -204,7 +204,7 @@ fn album_row_rect(area: Rect, index_in_view: usize) -> Rect {
 /// Returns nothing: the result is stored in `app.placements` for the painter.
 pub fn collect_placements(app: &mut App, area: Rect) {
     app.placements.clear();
-    if !app.protocol.is_pixel() {
+    if matches!(app.protocol, ArtProtocol::Off) {
         return;
     }
 
@@ -337,6 +337,12 @@ pub fn collect_placements(app: &mut App, area: Rect) {
             );
         }
         View::Playlists | View::PlaylistDetail | View::Search | View::Queue | View::Help => {}
+    }
+
+    // Symbol art is painted as cells by ratatui, so the painter must not see
+    // it: the requests above are all it needs from this function.
+    if !app.protocol.is_pixel() {
+        app.placements.clear();
     }
 }
 
@@ -761,16 +767,35 @@ fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) 
         .as_deref()
         .map(|key| app.art.is_ready(key))
         .unwrap_or(false);
-    if !has_art {
-        let placeholder = Rect {
-            x: row.x,
-            y: row.y,
-            width: THUMB_CELLS,
-            height: THUMB_ROWS,
-        };
-        draw_thumb_placeholder(frame, placeholder, cover.is_some());
+    let slot = Rect {
+        x: row.x,
+        y: row.y,
+        width: THUMB_CELLS,
+        height: THUMB_ROWS,
+    };
+    if has_art {
+        if let Some(key) = thumb_key.as_deref() {
+            draw_symbol_cover(frame, app, key, slot);
+        }
+    } else {
+        draw_thumb_placeholder(frame, slot, cover.is_some());
     }
     has_art
+}
+
+/// Paint a symbol cover into its slot, if the art is ready.
+///
+/// No-op for pixel protocols: the painter writes those straight to the
+/// terminal, and drawing cells over them would erase the image.
+fn draw_symbol_cover(frame: &mut Frame, app: &App, key: &str, slot: Rect) {
+    if app.protocol.is_pixel() {
+        return;
+    }
+    let Some(blob) = app.art.blob(key) else {
+        return;
+    };
+    let lines = crate::render::symbols::parse(blob, slot.width, slot.height, app.settings.backdrop);
+    frame.render_widget(Paragraph::new(lines), slot);
 }
 
 fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {

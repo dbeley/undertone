@@ -79,6 +79,8 @@
               mpv
               just
               pkg-config
+              # scripts/degradation.py drives the binary through a pty in CI
+              python3
             ];
             RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           };
