@@ -18,8 +18,8 @@ use ratatui::Frame;
 use ratatui::Terminal;
 
 use crate::app::{
-    AlbumLayout, App, ArtistPane, View, GRID_THUMB_H, GRID_THUMB_W, GRID_TILE_H, GRID_TILE_W,
-    ROW_HEIGHT, THUMB_CELLS, THUMB_ROWS,
+    AlbumLayout, App, ArtistLeft, ArtistPane, View, GRID_THUMB_H, GRID_THUMB_W, GRID_TILE_H,
+    GRID_TILE_W, ROW_HEIGHT, THUMB_CELLS, THUMB_ROWS,
 };
 use crate::art::ArtService;
 use crate::render::{
@@ -949,12 +949,7 @@ fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let panes = artist_pane_rects(area);
-    draw_pane_title(
-        frame,
-        "albums",
-        panes.albums,
-        app.artist_pane == ArtistPane::Albums,
-    );
+    draw_artist_left_title(frame, app, panes.albums);
     draw_pane_title(
         frame,
         "similar",
@@ -994,6 +989,12 @@ fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let albums_area = panes.albums_body();
+    if app.artist_left == ArtistLeft::Songs {
+        draw_artist_songs(frame, app, albums_area);
+        draw_similar_pane(frame, app, panes.similar_body());
+        draw_biography_pane(frame, app, panes.biography_body());
+        return;
+    }
     for slot in 0..visible_albums(albums_area) {
         let index = app.artist_album_scroll + slot;
         let Some(album) = artist.album.get(index) else {
@@ -1020,6 +1021,73 @@ fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
 
     draw_similar_pane(frame, app, panes.similar_body());
     draw_biography_pane(frame, app, panes.biography_body());
+}
+
+/// The left pane's two tabs, side by side; the one in force is bright.
+fn draw_artist_left_title(frame: &mut Frame, app: &App, pane: Rect) {
+    let focused = app.artist_pane == ArtistPane::Albums;
+    let mut spans = Vec::new();
+    for tab in [ArtistLeft::Albums, ArtistLeft::Songs] {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        }
+        let active = app.artist_left == tab;
+        let style = match (active, focused) {
+            (true, true) => Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            (true, false) => Style::default().fg(Color::Gray),
+            (false, _) => Style::default().fg(MUTED),
+        };
+        spans.push(Span::styled(tab.label().to_string(), style));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            x: pane.x,
+            y: pane.y,
+            width: pane.width,
+            height: 1,
+        },
+    );
+}
+
+/// The artist's top songs: numbered rows, like a playlist.
+fn draw_artist_songs(frame: &mut Frame, app: &App, area: Rect) {
+    if app.artist_songs.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no top songs for this artist",
+                Style::default().fg(MUTED),
+            )),
+            area,
+        );
+        return;
+    }
+
+    let rows = usize::from(area.height);
+    let offset = app
+        .artist_song_selected
+        .saturating_sub(rows.saturating_sub(1));
+    for slot in 0..rows {
+        let index = offset + slot;
+        let Some(song) = app.artist_songs.get(index) else {
+            break;
+        };
+        let selected = index == app.artist_song_selected
+            && app.artist_pane == ArtistPane::Albums
+            && app.artist_left == ArtistLeft::Songs;
+        let artist = song.album.clone().unwrap_or_default();
+        frame.render_widget(
+            Paragraph::new(track_line(index + 1, song, &artist, selected, area.width)),
+            Rect {
+                x: area.x,
+                y: area.y + slot as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
 }
 
 /// Similar artists, as a plain list: they are names, not covers.
@@ -1971,7 +2039,7 @@ fn key_hints(view: View) -> &'static str {
         View::Albums => "S sort · w grid · Enter · * star · ? help",
         View::AlbumDetail => "Enter play · * star · A artist · h back",
         View::Artists => "S sort · Enter open · h back",
-        View::ArtistDetail => "Tab pane · Enter open · * star · h back",
+        View::ArtistDetail => "Tab pane · t songs · Enter open · h back",
         View::Favorites => "Enter open · * unstar · h back",
         View::ListenLater => "a remove · Enter open · h back",
         View::Playlists => "Enter open · h back",
@@ -2562,6 +2630,50 @@ mod tests {
             !text.contains("Enter to open"),
             "the page must not repeat the keybindings: {text}"
         );
+    }
+
+    #[test]
+    fn the_left_pane_shows_its_two_tabs_and_the_song_list() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Aphex Twin".into(),
+            album: vec![album_with_cover("1")],
+            ..Default::default()
+        });
+        app.artist_songs = (0..3)
+            .map(|i| crate::subsonic::Song {
+                id: format!("s{i}"),
+                title: format!("top {i}"),
+                album: Some("Selected Ambient Works".into()),
+                duration: Some(320),
+                ..Default::default()
+            })
+            .collect();
+        app.artist_left = crate::app::ArtistLeft::Songs;
+        app.view = View::ArtistDetail;
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("albums"), "both tabs are named: {text}");
+        assert!(text.contains("top songs"), "{text}");
+        assert!(text.contains("top 0"), "the songs are listed: {text}");
+        assert!(text.contains("5:20"), "with their length: {text}");
+    }
+
+    #[test]
+    fn an_artist_without_top_songs_says_so_in_the_pane() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Aphex Twin".into(),
+            album: vec![album_with_cover("1")],
+            ..Default::default()
+        });
+        app.artist_left = crate::app::ArtistLeft::Songs;
+        app.view = View::ArtistDetail;
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("no top songs"), "{text}");
     }
 
     #[test]

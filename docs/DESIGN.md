@@ -455,7 +455,12 @@ Three rules keep the screens coherent as the app grew:
 
 - **An artist is a place, not a list.** Its page has three panes — albums,
   similar artists, biography — and `Tab` moves between them; the cursor follows
-  the focused pane, and `Enter` acts on what that pane holds. The biography is
+  the focused pane, and `Enter` acts on what that pane holds. The left pane has
+  two tabs, albums and the artist's most played tracks, switched with `t`:
+  albums and top songs answer the same question and both open something, so
+  they share the biggest pane rather than growing a fourth column. Top songs
+  come from `getTopSongs`, which is keyed by artist *name* and is optional on a
+  server without listening history. The biography is
   optional data from `getArtistInfo2`: a server without it still gets a usable
   page, and the pane says so. `A` on an album opens the artist behind it, using
   the album's own `artistId` rather than a lookup by name.

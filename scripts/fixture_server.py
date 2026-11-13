@@ -126,6 +126,21 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 ]
             }
+        elif endpoint == "getTopSongs":
+            response["topSongs"] = {
+                "song": [
+                    {
+                        "id": f"top-{n}",
+                        "title": f"Top Track {n + 1}",
+                        "artist": "Test Artist",
+                        "album": "Fixture One",
+                        "duration": 180 + n,
+                        "suffix": "flac",
+                        "bitRate": 900,
+                    }
+                    for n in range(4)
+                ]
+            }
         elif endpoint == "getArtistInfo2":
             response["artistInfo2"] = {
                 "biography": (

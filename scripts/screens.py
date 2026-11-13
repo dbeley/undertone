@@ -124,6 +124,15 @@ def main():
             )
         )
 
+        app.send("t", 2)  # the left pane's other tab
+        shots.append(
+            (
+                "An artist, top songs",
+                "The left pane has two tabs: albums and the artist's most played tracks.",
+                app.wait(0.5),
+            )
+        )
+
         app.send("6", 1.5)  # queue
         shots.append(("The queue", "What plays next; Enter starts from the cursor.", app.wait(0.5)))
         app.quit()

@@ -238,7 +238,7 @@ Three panes: albums, similar artists, biography. Tab moves between them.
 
 ```
   Albums   1│ Artist                                                                         Test Artist
-▸ Artists  2│ albums                                        │ similar
+▸ Artists  2│ albums · top songs                            │ similar
   Starred  3│ ▸ ▚ ▚  Fixture One                            │ Similar One
   Later    4│        Test Artist · 2000                     │ Similar Two
   Lists    5│        3 tracks                               │
@@ -264,8 +264,45 @@ Three panes: albums, similar artists, biography. Tab moves between them.
             │                                               │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │repeat off · shuffle off        │next
-Enter on an album to start         │Tab pane · Enter open · * star ·│end of queue
-                                   │h back                          │
+Enter on an album to start         │Tab pane · t songs · Enter open │end of queue
+                                   │· h back                        │
+                                   │                                │
+```
+
+## An artist, top songs
+
+The left pane has two tabs: albums and the artist's most played tracks.
+
+```
+  Albums   1│ Artist                                                                         Test Artist
+▸ Artists  2│ albums · top songs                            │ similar
+  Starred  3│   1. Top Track 1  Fixture One  3:00           │ Similar One
+  Later    4│   2. Top Track 2  Fixture One  3:01           │ Similar Two
+  Lists    5│   3. Top Track 3  Fixture One  3:02           │
+  Queue    6│   4. Top Track 4  Fixture One  3:03           │
+            │                                               │
+            │                                               │
+            │                                               │
+            │                                               │
+            │                                               │
+            │                                               │
+            │                                               │
+            │                                               │ ──────────────────────────────────────────
+            │                                               │ biography
+            │                                               │ A fixture artist, here so the biography
+            │                                               │ pane has something to wrap. The text is
+            │                                               │ long enough to need several lines in a
+            │                                               │ narrow column, which is the case the wrap
+            │                                               │ is for.
+            │                                               │
+            │                                               │
+            │                                               │
+            │                                               │
+            │                                               │
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing playing                    │artist: top songs               │next
+Enter on an album to start         │Tab pane · t songs · Enter open │end of queue
+                                   │· h back                        │
                                    │                                │
 ```
 
@@ -300,7 +337,7 @@ What plays next; Enter starts from the cursor.
             │ │                                                                                        │
             │ └────────────────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │repeat off · shuffle off        │next
+nothing playing                    │artist: top songs               │next
 Enter on an album to start         │Enter play · > skip · h back    │end of queue
                                    │                                │
                                    │                                │

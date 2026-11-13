@@ -90,6 +90,34 @@ impl ArtistPane {
     }
 }
 
+/// What the artist page's left pane is showing.
+///
+/// The page keeps three panes; this is a tab inside the first one, because
+/// albums and top songs are the same question — what does this artist have —
+/// and both are lists you open something from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtistLeft {
+    #[default]
+    Albums,
+    Songs,
+}
+
+impl ArtistLeft {
+    pub fn next(self) -> Self {
+        match self {
+            ArtistLeft::Albums => ArtistLeft::Songs,
+            ArtistLeft::Songs => ArtistLeft::Albums,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ArtistLeft::Albums => "albums",
+            ArtistLeft::Songs => "top songs",
+        }
+    }
+}
+
 /// One row of a search: albums open, songs play.
 ///
 /// A result list is capped at seventy rows, so the width of the largest
@@ -298,6 +326,11 @@ pub struct App {
     pub artist_detail: Option<ArtistDetail>,
     pub artist_info: Option<ArtistInfo>,
     pub artist_pane: ArtistPane,
+    /// The artist's most played tracks, when the server knows them.
+    pub artist_songs: Vec<Song>,
+    pub artist_left: ArtistLeft,
+    pub artist_song_selected: usize,
+    pub artist_song_scroll: usize,
     pub artist_similar_selected: usize,
     pub artist_bio_scroll: usize,
     /// The server's playlists, and the one being looked at.
@@ -386,6 +419,10 @@ impl App {
             artist_detail: None,
             artist_info: None,
             artist_pane: ArtistPane::default(),
+            artist_songs: Vec::new(),
+            artist_left: ArtistLeft::default(),
+            artist_song_selected: 0,
+            artist_song_scroll: 0,
             artist_similar_selected: 0,
             artist_bio_scroll: 0,
             playlists: Vec::new(),
@@ -441,6 +478,10 @@ impl App {
     /// hundred keeps a page under about a second on a slow link while filling
     /// a screen several times over, so scrolling rarely waits.
     pub const ALBUM_PAGE: usize = 100;
+
+    /// Top songs asked for per artist. Twenty fills the pane and is what the
+    /// server's own clients ask for; more would be a scroll of the same track.
+    pub const TOP_SONGS: u32 = 20;
 
     /// Albums fetched per scroll. Random order lands here.
     pub fn load_albums(&mut self) {
@@ -778,11 +819,33 @@ impl App {
                 self.artist_pane = ArtistPane::Albums;
                 self.artist_similar_selected = 0;
                 self.artist_bio_scroll = 0;
+                self.artist_left = ArtistLeft::Albums;
+                self.artist_song_selected = 0;
+                self.artist_song_scroll = 0;
                 self.artist_info = self.client.artist_info(id).ok();
+                // Top songs are keyed by artist *name*, and are optional: a
+                // server without listening history returns nothing.
+                self.artist_songs = self
+                    .client
+                    .top_songs(name, Self::TOP_SONGS)
+                    .unwrap_or_default();
                 self.set_view(View::ArtistDetail);
             }
             Err(err) => self.error(format!("could not open {name}: {err}")),
         }
+    }
+
+    /// Play a top song, with the rest of the artist's top songs behind it.
+    pub fn play_artist_song(&mut self, index: usize) {
+        if self.artist_songs.is_empty() {
+            self.status("no top songs for this artist");
+            return;
+        }
+        let index = index.min(self.artist_songs.len() - 1);
+        let items: Vec<QueueItem> = self.artist_songs.iter().map(queue_item).collect();
+        self.queue.replace(items);
+        self.queue.jump_to(index);
+        self.play_current();
     }
 
     /// `A` on an album: the artist behind it.
@@ -1522,6 +1585,11 @@ impl App {
             KeyCode::BackTab if self.view == View::ArtistDetail => {
                 self.artist_pane = self.artist_pane.prev()
             }
+            KeyCode::Char('t') if self.view == View::ArtistDetail => {
+                self.artist_left = self.artist_left.next();
+                self.artist_pane = ArtistPane::Albums;
+                self.status(format!("artist: {}", self.artist_left.label()));
+            }
             KeyCode::Char('L') => self.open_listen_later(),
             // On an album, `A` is the artist behind it; everywhere else it is
             // the artist list.
@@ -1579,11 +1647,14 @@ impl App {
                 .unwrap_or(0),
             View::Artists => self.artists.len(),
             View::ArtistDetail => match self.artist_pane {
-                ArtistPane::Albums => self
-                    .artist_detail
-                    .as_ref()
-                    .map(|artist| artist.album.len())
-                    .unwrap_or(0),
+                ArtistPane::Albums => match self.artist_left {
+                    ArtistLeft::Albums => self
+                        .artist_detail
+                        .as_ref()
+                        .map(|artist| artist.album.len())
+                        .unwrap_or(0),
+                    ArtistLeft::Songs => self.artist_songs.len(),
+                },
                 ArtistPane::Similar => self
                     .artist_info
                     .as_ref()
@@ -1616,7 +1687,10 @@ impl App {
             View::AlbumDetail => self.detail_selected,
             View::Artists => self.artist_selected,
             View::ArtistDetail => match self.artist_pane {
-                ArtistPane::Albums => self.artist_album_selected,
+                ArtistPane::Albums => match self.artist_left {
+                    ArtistLeft::Albums => self.artist_album_selected,
+                    ArtistLeft::Songs => self.artist_song_selected,
+                },
                 ArtistPane::Similar => self.artist_similar_selected,
                 ArtistPane::Biography => self.artist_bio_scroll,
             },
@@ -1667,7 +1741,10 @@ impl App {
             View::AlbumDetail => self.detail_selected = next,
             View::Artists => self.artist_selected = next,
             View::ArtistDetail => match self.artist_pane {
-                ArtistPane::Albums => self.artist_album_selected = next,
+                ArtistPane::Albums => match self.artist_left {
+                    ArtistLeft::Albums => self.artist_album_selected = next,
+                    ArtistLeft::Songs => self.artist_song_selected = next,
+                },
                 ArtistPane::Similar => self.artist_similar_selected = next,
                 ArtistPane::Biography => self.artist_bio_scroll = next,
             },
@@ -1754,6 +1831,9 @@ impl App {
                 None => {}
             },
             View::ArtistDetail => match self.artist_pane {
+                ArtistPane::Albums if self.artist_left == ArtistLeft::Songs => {
+                    self.play_artist_song(self.artist_song_selected)
+                }
                 ArtistPane::Albums => {
                     let album = self
                         .artist_detail
@@ -2762,6 +2842,52 @@ mod tests {
         assert_eq!(app.view, View::Albums);
         app.handle_key(key(KeyCode::Right));
         assert_eq!(app.view, View::AlbumDetail);
+    }
+
+    #[test]
+    fn t_switches_the_left_pane_to_top_songs() {
+        let mut app = artist_page_app();
+        app.artist_songs = (0..4)
+            .map(|i| Song {
+                id: format!("s{i}"),
+                title: format!("top {i}"),
+                duration: Some(180),
+                ..Default::default()
+            })
+            .collect();
+
+        app.handle_key(key(KeyCode::Char('t')));
+
+        assert_eq!(app.artist_left, ArtistLeft::Songs);
+        assert_eq!(app.artist_pane, ArtistPane::Albums, "focus follows the tab");
+        assert_eq!(app.cursor_len(), 4, "the cursor walks the songs now");
+    }
+
+    #[test]
+    fn a_top_song_queues_the_rest_of_them() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.artist_songs = (0..3)
+            .map(|i| Song {
+                id: format!("s{i}"),
+                title: format!("top {i}"),
+                duration: Some(120),
+                ..Default::default()
+            })
+            .collect();
+
+        app.play_artist_song(1);
+
+        assert_eq!(app.queue.len(), 3, "the whole list is queued");
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s1"));
+    }
+
+    #[test]
+    fn an_artist_with_no_top_songs_says_so() {
+        let mut app = app();
+        app.play_artist_song(0);
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("no top songs"), "{}", status.text);
     }
 
     // ------------------------------------------------------------- artist page
