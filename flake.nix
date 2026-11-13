@@ -21,29 +21,44 @@
           }
         );
 
+      # `wrapper = false` builds just the binary: no runtime PATH wrapping and
+      # no release-tuning. That is what the ARM cross-check needs, and it keeps
+      # the build out of mpv's and ffmpeg's dependency trees.
       mkUndertone =
-        pkgs:
+        {
+          pkgs,
+          wrapper ? true,
+        }:
         pkgs.rustPlatform.buildRustPackage {
           pname = "undertone";
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
 
-          env = {
-            CARGO_PROFILE_RELEASE_LTO = "fat";
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
-            CARGO_PROFILE_RELEASE_PANIC = "abort";
-            CARGO_PROFILE_RELEASE_STRIP = "symbols";
-          };
+          env =
+            if wrapper then
+              {
+                CARGO_PROFILE_RELEASE_LTO = "fat";
+                CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
+                CARGO_PROFILE_RELEASE_PANIC = "abort";
+                CARGO_PROFILE_RELEASE_STRIP = "symbols";
+              }
+            else
+              { };
 
-          nativeBuildInputs = [ pkgs.makeWrapper ];
+          nativeBuildInputs = if wrapper then [ pkgs.makeWrapper ] else [ ];
 
           # mpv and chafa are runtime dependencies, not build inputs: the
           # binary execs them. Wrapping puts both on PATH so a fresh NixOS
           # install works without the user installing anything by hand.
           postInstall = ''
             wrapProgram $out/bin/undertone \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.mpv pkgs.chafa ]}
+              --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.mpv
+                  pkgs.chafa
+                ]
+              }
           '';
 
           # Tests run in CI via `cargo test`, where fixtures and tools exist.
@@ -58,13 +73,28 @@
         };
     in
     {
-      packages = forAllSystems (
-        { pkgs }:
-        {
-          undertone = mkUndertone pkgs;
-          default = mkUndertone pkgs;
-        }
-      );
+      packages =
+        nixpkgs.lib.recursiveUpdate
+          (forAllSystems (
+            { pkgs }:
+            {
+              undertone = mkUndertone { inherit pkgs; };
+              default = mkUndertone { inherit pkgs; };
+            }
+          ))
+          {
+            # Every target this app is for is ARM, so an x86_64 build proves
+            # little. This cross-builds for aarch64 from an x86_64 machine: build
+            # scripts run natively, only the crate code is compiled for the
+            # target, so it needs no emulation. CI builds it.
+            x86_64-linux.cross-aarch64 = mkUndertone {
+              wrapper = false;
+              pkgs = import nixpkgs {
+                system = "x86_64-linux";
+                crossSystem = "aarch64-unknown-linux-gnu";
+              };
+            };
+          };
 
       devShells = forAllSystems (
         { pkgs }:
@@ -92,7 +122,12 @@
       };
 
       nixosModules.default =
-        { config, lib, pkgs, ... }:
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
         let
           cfg = config.programs.undertone;
         in

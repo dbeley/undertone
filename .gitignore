@@ -3,3 +3,4 @@
 /target
 *.blob
 .envrc.local
+__pycache__/

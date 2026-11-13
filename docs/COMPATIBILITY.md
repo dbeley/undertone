@@ -62,6 +62,9 @@ queue list stay.
 | `chafa` missing | art off, a warning | `tests/errors.rs` |
 | a track fails mid-playlist | message, playback moves on | `tests/errors.rs`, `src/app.rs` |
 
+What the interface looks like is in `docs/SCREENS.md`, rendered from the real
+binary by `scripts/screens.py`.
+
 ## Not covered here
 
 - **A real framebuffer console.** No pty row can stand in for `fbcon`; the

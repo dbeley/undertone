@@ -1,0 +1,195 @@
+# Screens
+
+Rendered by `scripts/screens.py` from the real binary driving a pty
+against `scripts/fixture_server.py`, so what is written here is what the
+interface draws. Regenerate with
+`python3 scripts/screens.py ./target/release/undertone`.
+
+Covers are characters here because the fixture runs with `--art=symbols`;
+on a terminal with sixel or kitty support they are images in the same
+places. See `docs/COMPATIBILITY.md`.
+
+## The library
+
+Album list, with the rail, the list's own header and the three-column bar.
+
+```
+▸ Albums   1│ Albums · random                                                                      1 / 3
+  Artists  2│        Fixture One
+  Starred  3│ yyy _y Test Artist · 2000
+  Later    4│     y~ 3 tracks
+  Lists    5│        Fixture Two
+  Queue    6│ yyy _y Other Band · 2001
+            │     y~ 3 tracks
+            │        Third
+            │ yyy _y Nobody · 2002
+            │     y~ 3 tracks
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing playing                    │fixture 1.16.1                  │next
+Enter on an album to start         │S sort · w grid · Enter · * star│end of queue
+                                   │· ? help                        │
+                                   │                                │
+```
+
+## An album
+
+The album's cover and its tracks; the bar keeps playing state.
+
+```
+▸ Albums   1│ Album                                                                          Fixture One
+  Artists  2│                      Fixture One
+  Starred  3│                      Test Artist
+  Later    4│                      2000 · 3 tracks
+  Lists    5│
+  Queue    6│                      Enter play · Space pause · > next
+            │
+            │
+            │
+            │
+            │   1. Track 1  3:20
+            │   2. Track 2  3:20
+            │   3. Track 3  3:20
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing playing                    │repeat off · shuffle off        │next
+Enter on an album to start         │Enter play · * star · h back    │end of queue
+                                   │                                │
+                                   │                                │
+```
+
+## Search
+
+One flat result list: albums first, then songs, each row labelled.
+
+```
+  Albums   1│ Search · fixture                                                                     1 / 6
+  Artists  2│ album Fixture One  Test Artist
+  Starred  3│ album Fixture Two  Other Band
+  Later    4│ album Third  Nobody
+  Lists    5│ song  Track 1  Test Artist
+  Queue    6│ song  Track 2  Test Artist
+            │ song  Track 3  Test Artist
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing playing                    │6 results for “fixture”         │next
+Enter on an album to start         │/ edit · Enter open · h back    │end of queue
+                                   │                                │
+                                   │                                │
+```
+
+## Playlists
+
+The server's playlists, with their size.
+
+```
+  Albums   1│ Playlists                                                                                1
+  Artists  2│ Fixture List  3 tracks
+  Starred  3│
+  Later    4│
+▸ Lists    5│
+  Queue    6│
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing playing                    │6 results for “fixture”         │next
+Enter on an album to start         │Enter open · h back             │end of queue
+                                   │                                │
+                                   │                                │
+```
+
+## The queue
+
+What plays next; Enter starts from the cursor.
+
+```
+  Albums   1│ Queue                                                                                    0
+  Artists  2│ ┌ Queue — 0 tracks · shuffle off · repeat off ───────────────────────────────────────────┐
+  Starred  3│ │                                                                                        │
+  Later    4│ │                                                                                        │
+  Lists    5│ │                                                                                        │
+▸ Queue    6│ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ └────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing playing                    │repeat off · shuffle off        │next
+Enter on an album to start         │Enter play · > skip · h back    │end of queue
+                                   │                                │
+                                   │                                │
+```

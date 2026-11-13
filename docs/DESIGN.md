@@ -433,16 +433,19 @@ Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic
 - `tests/perf.rs` + `scripts/measure.sh`: startup to first frame, idle RSS (read `/proc/self/status` VmHWM), full redraw timing, cache-hit latency. Thresholds from the budget table, generous enough for CI noise.
 - Verify: `cargo test --release --test perf` passes on CI.
 
-**Task 6.2 — Degradation matrix**
-- Force each art mode (`sixel`, `kitty`, `symbols`, `off`), forced 16 colours, `--no-art`, tiny terminal (40×12), huge terminal (300×80).
-- Verify: no panic, no layout overflow, art absent rather than broken.
+**Task 6.2 — Degradation matrix** — done
+- `scripts/degradation.py` drives the real binary through a pty and asserts on the rendered screen: `sixel`, `kitty`, `symbols`, `--no-art`, 60×24, 18×4, dead server, missing player.
+- It serves its own library (`scripts/fixture_server.py`), so it needs no network, and runs in CI.
+- Results and the cases it cannot cover are in `docs/COMPATIBILITY.md`. The matrix is what found symbol art being dead in three places at once.
 
 **Task 6.3 — Error paths**
 - Server down at startup, auth failure, mid-playback network loss, mpv missing from PATH, mpv crash, malformed JSON, unreadable cache dir.
 - Verify: each surfaces as a non-fatal status-line message; the app never exits from a recoverable error.
 
-**Task 6.4 — Docs**
-- `README.md` (what/why, screenshots via `vhs`, install, config, keys), `docs/DESIGN.md` (decisions + measured data), `docs/PERFORMANCE.md` (how to reproduce measurements).
+**Task 6.4 — Docs** — mostly done
+- `docs/DESIGN.md` (this file), `docs/PERFORMANCE.md` (how to reproduce the measurements), `docs/COMPATIBILITY.md` (what each terminal and each failure does), `docs/SCREENS.md` (frames rendered by `scripts/screens.py` from the real binary, so they cannot drift).
+- `README.md` is the entry point, kept short on purpose.
+- Not done: `vhs` recordings. The frames in `docs/SCREENS.md` are text because a terminal screenshot is text; an animated recording would show the art protocols and the gapless transitions, which text cannot.
 
 ---
 
@@ -454,6 +457,7 @@ Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic
 | Render | `TestBackend` + recorded fixtures | row/detail layout, placement rects |
 | Perf | `tests/perf.rs` | startup, RSS, redraw time, cache hit |
 | Nix | `nix flake check`, `nix build` | package builds, module evaluates, binary size gate |
+| Degradation | `scripts/degradation.py` | art protocol per setting, narrow/tiny layouts, dead server, missing player |
 | Manual | device | real foot sixel on the Pi 2, scroll smoothness, audio device handover |
 
 Renderer fixtures are recorded from real `chafa` output and committed, so tests do not require chafa at test time.
