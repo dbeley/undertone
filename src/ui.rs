@@ -269,19 +269,28 @@ pub fn collect_placements(app: &mut App, area: Rect) {
             }
         }
         View::Artists => {
-            app.ensure_artist_visible(main.height);
+            app.ensure_artist_visible(main.width, main.height);
             let covers: Vec<Option<String>> = app
                 .artists
                 .iter()
                 .map(|artist| artist.cover_art.clone())
                 .collect();
-            collect_list_placements(
-                app,
-                main,
-                &covers,
-                app.artist_scroll,
-                app.artist_selected + visible_albums(main),
-            );
+            match app.artist_layout {
+                AlbumLayout::List => collect_list_placements(
+                    app,
+                    main,
+                    &covers,
+                    app.artist_scroll,
+                    app.artist_selected + visible_albums(main),
+                ),
+                AlbumLayout::Grid => collect_grid_placements(
+                    app,
+                    main,
+                    &covers,
+                    app.artist_scroll,
+                    app.artist_selected,
+                ),
+            }
         }
         View::ArtistDetail => {
             let albums_area = artist_albums_area(main);
@@ -343,6 +352,42 @@ pub fn collect_placements(app: &mut App, area: Rect) {
     // it: the requests above are all it needs from this function.
     if !app.protocol.is_pixel() {
         app.placements.clear();
+    }
+}
+
+/// Place grid thumbnails: a wall draws its covers at their tile rects.
+fn collect_grid_placements(
+    app: &mut App,
+    main: Rect,
+    covers: &[Option<String>],
+    scroll: usize,
+    selected: usize,
+) {
+    let cols = app.grid_columns(main.width).max(1) as u16;
+    let tile_rows = (main.height / GRID_TILE_H).max(1);
+    let per_page = usize::from(cols * tile_rows);
+    for slot in 0..per_page {
+        let index = scroll + slot;
+        if index >= covers.len() {
+            break;
+        }
+        let Some(cover) = covers[index].as_deref() else {
+            continue;
+        };
+        let key = app.art.request(
+            cover,
+            u32::from(GRID_THUMB_W),
+            u32::from(GRID_THUMB_H),
+            app.settings.thumb_colors,
+            index > selected + per_page,
+        );
+        if !app.art.is_ready(&key) {
+            continue;
+        }
+        let x = main.x + (slot as u16 % cols) * GRID_TILE_W;
+        let y = main.y + (slot as u16 / cols) * GRID_TILE_H;
+        app.placements
+            .push(Placement::new(key, y, x, GRID_THUMB_H, GRID_THUMB_W));
     }
 }
 
@@ -799,36 +844,50 @@ fn draw_symbol_cover(frame: &mut Frame, app: &App, key: &str, slot: Rect) {
 }
 
 fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {
-    if app.artists.is_empty() {
-        frame.render_widget(
-            Paragraph::new("No artists loaded. Press A to fetch them.")
-                .style(Style::default().fg(MUTED)),
-            area,
-        );
-        return;
-    }
-    for slot in 0..visible_albums(area) {
-        let index = app.artist_scroll + slot;
-        let Some(artist) = app.artists.get(index) else {
-            break;
-        };
-        let subtitle = match artist.album_count {
-            Some(1) => "1 album".to_string(),
-            Some(count) => format!("{count} albums"),
-            None => String::new(),
-        };
-        draw_row(
-            frame,
-            app,
-            area,
-            slot,
-            artist.cover_art.as_deref(),
-            &artist.name,
-            &subtitle,
-            None,
-            index == app.artist_selected,
-            artist.starred.is_some(),
-        );
+    match app.artist_layout {
+        AlbumLayout::Grid => {
+            let tiles: Vec<Tile> = app
+                .artists
+                .iter()
+                .map(|artist| Tile {
+                    cover: artist.cover_art.as_deref(),
+                    label: &artist.name,
+                })
+                .collect();
+            draw_wall(
+                frame,
+                app,
+                area,
+                &tiles,
+                app.artist_selected,
+                app.artist_scroll,
+            );
+        }
+        AlbumLayout::List => {
+            let rows = usize::from(area.height / ROW_HEIGHT).max(1);
+            for slot in 0..rows {
+                let index = app.artist_scroll + slot;
+                let Some(artist) = app.artists.get(index) else {
+                    break;
+                };
+                let albums = artist
+                    .album_count
+                    .map(|count| format!("{count} albums"))
+                    .unwrap_or_default();
+                draw_row(
+                    frame,
+                    app,
+                    area,
+                    slot,
+                    artist.cover_art.as_deref(),
+                    &artist.name,
+                    &albums,
+                    None,
+                    index == app.artist_selected,
+                    artist.starred.is_some(),
+                );
+            }
+        }
     }
 }
 
@@ -1156,21 +1215,35 @@ fn draw_favorites(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_albums_grid(frame: &mut Frame, app: &App, area: Rect) {
+/// One tile of a wall: a cover and the line of text under it.
+struct Tile<'a> {
+    cover: Option<&'a str>,
+    label: &'a str,
+}
+
+/// A wall of covers. Shared by the album list and the artist list.
+fn draw_wall(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    tiles: &[Tile],
+    selected: usize,
+    scroll: usize,
+) {
     let cols = app.grid_columns(area.width).max(1) as u16;
     let tile_rows = (area.height / GRID_TILE_H).max(1);
     let per_page = usize::from(cols * tile_rows);
 
     for slot in 0..per_page {
-        let index = app.scroll + slot;
-        let Some(album) = app.albums.get(index) else {
+        let index = scroll + slot;
+        let Some(tile) = tiles.get(index) else {
             break;
         };
-        let is_selected = index == app.selected;
+        let is_selected = index == selected;
         let x = area.x + (slot as u16 % cols) * GRID_TILE_W;
         let y = area.y + (slot as u16 / cols) * GRID_TILE_H;
 
-        let thumb_key = album.cover_art.as_deref().map(|cover| {
+        let thumb_key = tile.cover.map(|cover| {
             ArtService::key(
                 cover,
                 u32::from(GRID_THUMB_W),
@@ -1183,27 +1256,25 @@ fn draw_albums_grid(frame: &mut Frame, app: &App, area: Rect) {
             .as_deref()
             .map(|key| app.art.is_ready(key))
             .unwrap_or(false);
-        if !has_art {
-            let placeholder = Rect {
-                x,
-                y,
-                width: GRID_THUMB_W,
-                height: GRID_THUMB_H,
-            };
-            draw_thumb_placeholder(frame, placeholder, album.cover_art.is_some());
+        let thumb = Rect {
+            x,
+            y,
+            width: GRID_THUMB_W,
+            height: GRID_THUMB_H,
+        };
+        if has_art {
+            if let Some(key) = thumb_key.as_deref() {
+                draw_symbol_cover(frame, app, key, thumb);
+            }
+        } else {
+            draw_thumb_placeholder(frame, thumb, tile.cover.is_some());
         }
 
         // One line of text under the cover; the tile is too narrow for more.
-        let label_area = Rect {
-            x,
-            y: y + GRID_THUMB_H,
-            width: GRID_THUMB_W,
-            height: 1,
-        };
         let label = if is_selected {
-            format!("▸{}", album.name)
+            format!("\u{25b8}{}", tile.label)
         } else {
-            format!(" {}", album.name)
+            format!(" {}", tile.label)
         };
         frame.render_widget(
             Paragraph::new(label).style(if is_selected {
@@ -1211,9 +1282,26 @@ fn draw_albums_grid(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(MUTED)
             }),
-            label_area,
+            Rect {
+                x,
+                y: y + GRID_THUMB_H,
+                width: GRID_THUMB_W,
+                height: 1,
+            },
         );
     }
+}
+
+fn draw_albums_grid(frame: &mut Frame, app: &App, area: Rect) {
+    let tiles: Vec<Tile> = app
+        .albums
+        .iter()
+        .map(|album| Tile {
+            cover: album.cover_art.as_deref(),
+            label: &album.name,
+        })
+        .collect();
+    draw_wall(frame, app, area, &tiles, app.selected, app.scroll);
 }
 
 fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
