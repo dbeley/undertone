@@ -1,39 +1,7 @@
 # Undertone
 
-A Subsonic/Navidrome music client for very weak Linux hardware — Raspberry Pi 2
-class ARM boards and slow laptops. Terminal UI, keyboard only, flat memory
+A lightweight Subsonic/Navidrome music clientbuilt for speed. Terminal UI, keyboard only, small memory
 footprint.
-
-> **Status: early development.** Nothing usable yet. Design is settled; see
-> `docs/DESIGN.md` once it lands, and the plan this project is being built from.
-
-## Why
-
-Covertone is a browser-based Subsonic client with a discovery-oriented feature
-set. Undertone keeps the parts worth keeping — discovery, random-first browsing,
-Auto DJ, Listen Later — and drops everything that needs a browser, a GPU, or a
-daemon:
-
-| Kept | Dropped |
-|---|---|
-| Discovery pane, Auto DJ, Listen Later, random-first sorting | Tabs, trivia game, AI integration |
-| Subsonic library, playlists, favourites, search | Library rescans |
-| Scrobbling (via the Subsonic `scrobble` endpoint) | Offline audio cache and downloads |
-| Album art — real pixels via sixel/kitty | Accent-colour theming |
-| Full keyboard control | Mouse, hover, rich text |
-
-## Design in one paragraph
-
-Audio plays through an `mpv` subprocess over JSON IPC, handed a window of three
-tracks at a time so it runs from one to the next without reopening the audio
-device; the app follows mpv's playlist position instead of stopping and
-reloading between tracks. Album art is fetched
-pre-scaled from the server, encoded to sixel (foot) or kitty graphics
-(kitty/ghostty) by `chafa` in a background worker, cached on disk as final
-escape bytes, and reconciled onto the screen by a painter that emits zero bytes
-when nothing changed. There is no local library index: the server's search and
-paginated list endpoints are the database. One 1 Hz timer, one event loop, no
-polling.
 
 ## Requirements
 
@@ -42,7 +10,7 @@ polling.
 - `mpv` and `chafa` at runtime.
 - NixOS: the flake provides both.
 
-## Install
+## Run with the Nix package manager
 
 ```bash
 nix run github:dbeley/undertone
@@ -80,20 +48,6 @@ backdrop = "#000000"
 [player]
 mpv = "mpv"
 ```
-
-## What it remembers
-
-Two files in `$XDG_STATE_HOME/undertone/` (not the cache directory, so a cache
-wipe cannot take them):
-
-- `listen_later.json` — albums saved with `a`, newest first.
-- `session.json` — the queue and cursor from last time. Restored **paused**:
-  opening the app never starts making noise, `p` resumes.
-
-Auto DJ tops the queue up when fewer than two tracks remain, from
-`getSimilarSongs` and, when that adds nothing new, from random songs. It runs
-once per track transition rather than on a timer, so a slow server costs one
-track change instead of making the interface stutter.
 
 ## Keys
 
@@ -149,7 +103,3 @@ cargo build
 cargo test
 cargo run -- --player=null --art=off   # no audio, no images
 ```
-
-## Licence
-
-GPL-3.0-or-later, matching Covertone.
