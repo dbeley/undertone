@@ -98,18 +98,22 @@ track change instead of making the interface stutter.
 ## Keys
 
 ```
-1-5        rail: albums · artists · favourites · later · queue
+1-6        rail: albums · artists · starred · later · lists · queue
 j / k      move down / up      Ctrl-d/u  page down / up
 h / l      left / right (grid) · h back
 w          list / grid toggle  g / G   first / last
 Enter      open album · play track    p / Space  play / pause
 > / <      next / prev         f / b   seek ±10s
 s / r      shuffle / repeat    +/-     volume      m  mute
-Q          queue               ?       help        Esc back
-L          listen later        A       artists     F  favourites
+5          playlists           ?       help        Esc back
+L          listen later        A       artists     F  starred
 a          save / unsave album *       star / unstar
 S / R      change sort / reload         q   quit
 ```
+
+Playlists open like albums: `5` lists them with their size, Enter shows the
+tracks, Enter plays from that point with the rest of the playlist queued behind
+it.
 
 `S` cycles the sort of the list you are looking at: albums run
 random → recent → most played → a-z, artists run most albums → a-z → most

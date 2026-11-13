@@ -117,12 +117,13 @@ fn shell_layout(area: Rect) -> Shell {
 }
 
 /// The views reachable from the rail, with their jump keys.
-const NAV_ITEMS: [(View, &str, char); 5] = [
+const NAV_ITEMS: [(View, &str, char); 6] = [
     (View::Albums, "Albums", '1'),
     (View::Artists, "Artists", '2'),
     (View::Favorites, "Starred", '3'),
     (View::ListenLater, "Later", '4'),
-    (View::Queue, "Queue", '5'),
+    (View::Playlists, "Lists", '5'),
+    (View::Queue, "Queue", '6'),
 ];
 
 /// Which rail entry a view belongs to: an album detail is still "Albums".
@@ -130,6 +131,7 @@ fn nav_owner(view: View) -> View {
     match view {
         View::AlbumDetail => View::Albums,
         View::ArtistDetail => View::Artists,
+        View::PlaylistDetail => View::Playlists,
         other => other,
     }
 }
@@ -334,7 +336,7 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                 app.listen_selected + visible,
             );
         }
-        View::Queue | View::Help => {}
+        View::Playlists | View::PlaylistDetail | View::Queue | View::Help => {}
     }
 }
 
@@ -474,6 +476,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Favorites => draw_favorites(frame, app, shell.body),
         View::Queue => draw_queue(frame, app, shell.body),
         View::ListenLater => draw_listen_later(frame, app, shell.body),
+        View::Playlists => draw_playlists(frame, app, shell.body),
+        View::PlaylistDetail => draw_playlist_detail(frame, app, shell.body),
         View::Help => draw_help(frame, shell.body),
     }
 
@@ -492,6 +496,8 @@ fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
         View::ArtistDetail => ("Artist", None),
         View::Favorites => ("Starred", None),
         View::ListenLater => ("Listen later", None),
+        View::Playlists => ("Playlists", None),
+        View::PlaylistDetail => ("Playlist", None),
         View::Queue => ("Queue", None),
         View::Help => ("Help", None),
     };
@@ -500,6 +506,12 @@ fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
         View::Artists => format!("{} / {}", app.artist_selected + 1, app.artists.len()),
         View::Favorites => format!("{}", app.favorites.len()),
         View::ListenLater => format!("{}", app.listen_albums.len()),
+        View::Playlists => format!("{}", app.playlists.len()),
+        View::PlaylistDetail => app
+            .playlist_detail
+            .as_ref()
+            .map(|playlist| format!("{} / {}", app.playlist_selected + 1, playlist.entry.len()))
+            .unwrap_or_default(),
         View::Queue => format!("{}", app.queue.len()),
         View::AlbumDetail => app
             .detail
@@ -966,6 +978,125 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// The playlist list: a name and how much is in it.
+fn draw_playlists(frame: &mut Frame, app: &App, area: Rect) {
+    if app.playlists.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no playlists on this server",
+                Style::default().fg(MUTED),
+            )),
+            area,
+        );
+        return;
+    }
+
+    let rows = usize::from(area.height);
+    let offset = app.playlist_selected.saturating_sub(rows.saturating_sub(1));
+    for slot in 0..rows {
+        let index = offset + slot;
+        let Some(playlist) = app.playlists.get(index) else {
+            break;
+        };
+        let selected = index == app.playlist_selected;
+        let count = match playlist.song_count {
+            Some(count) => format!("{count} tracks"),
+            None => String::new(),
+        };
+        let name_width = usize::from(area.width)
+            .saturating_sub(count.chars().count() + 4)
+            .max(8);
+        let line = Line::from(vec![
+            Span::styled(
+                truncate_chars(&playlist.name, name_width),
+                if selected {
+                    selected_style()
+                } else {
+                    Style::default()
+                },
+            ),
+            Span::styled(format!("  {count}"), Style::default().fg(MUTED)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect {
+                x: area.x,
+                y: area.y + slot as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// One playlist's tracks.
+fn draw_playlist_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(playlist) = app.playlist_detail.as_ref() else {
+        frame.render_widget(Paragraph::new("No playlist"), area);
+        return;
+    };
+    if playlist.entry.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "this playlist is empty",
+                Style::default().fg(MUTED),
+            )),
+            area,
+        );
+        return;
+    }
+
+    let rows = usize::from(area.height);
+    let offset = app.playlist_selected.saturating_sub(rows.saturating_sub(1));
+    for slot in 0..rows {
+        let index = offset + slot;
+        let Some(song) = playlist.entry.get(index) else {
+            break;
+        };
+        let selected = index == app.playlist_selected;
+        let artist = song.artist.clone().unwrap_or_default();
+        frame.render_widget(
+            Paragraph::new(track_line(index + 1, song, &artist, selected, area.width)),
+            Rect {
+                x: area.x,
+                y: area.y + slot as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// One numbered track row, shared by the playlist view.
+fn track_line<'a>(
+    number: usize,
+    song: &crate::subsonic::Song,
+    artist: &str,
+    selected: bool,
+    width: u16,
+) -> Line<'a> {
+    let duration = song
+        .duration
+        .map(format_duration)
+        .unwrap_or_else(|| "--:--".to_string());
+    let tail = format!("{artist}  {duration}").trim().to_string();
+    let title_width = usize::from(width)
+        .saturating_sub(tail.chars().count() + 8)
+        .max(8);
+    Line::from(vec![
+        Span::styled(format!("{number:>3}. "), Style::default().fg(MUTED)),
+        Span::styled(
+            truncate_chars(&song.title, title_width),
+            if selected {
+                selected_style()
+            } else {
+                Style::default()
+            },
+        ),
+        Span::styled(format!("  {tail}"), Style::default().fg(MUTED)),
+    ])
+}
+
 fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(format!(
         " Queue — {} tracks · shuffle {} · repeat {} ",
@@ -1308,6 +1439,8 @@ fn key_hints(view: View) -> &'static str {
         View::ArtistDetail => "Enter open · * star · h back",
         View::Favorites => "Enter open · * unstar · h back",
         View::ListenLater => "a remove · Enter open · h back",
+        View::Playlists => "Enter open · h back",
+        View::PlaylistDetail => "Enter play · h back",
         View::Queue => "Enter play · > skip · h back",
         View::Help => "",
     }
@@ -1657,6 +1790,64 @@ mod tests {
         let text = rendered_text(&app, 100, 24);
         assert!(text.contains("repeat off"), "{text}");
     }
+
+    fn playlist(name: &str, tracks: usize) -> crate::subsonic::Playlist {
+        crate::subsonic::Playlist {
+            id: format!("pl-{name}"),
+            name: name.to_string(),
+            song_count: Some(tracks as u32),
+            entry: (0..tracks)
+                .map(|i| crate::subsonic::Song {
+                    id: format!("{name}-{i}"),
+                    title: format!("song {i}"),
+                    artist: Some("someone".into()),
+                    duration: Some(200),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn playlists_are_listed_with_their_size() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.playlists = vec![playlist("morning", 12), playlist("focus", 4)];
+        app.view = View::Playlists;
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("morning"), "{text}");
+        assert!(text.contains("12 tracks"), "{text}");
+        assert!(text.contains("focus"), "{text}");
+        assert!(
+            text.contains("Playlists"),
+            "the header names the view: {text}"
+        );
+    }
+
+    #[test]
+    fn a_playlist_shows_its_tracks_numbered() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.playlist_detail = Some(playlist("morning", 3));
+        app.view = View::PlaylistDetail;
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("song 0"), "{text}");
+        assert!(text.contains("song 2"), "{text}");
+        assert!(
+            text.contains("1 / 3"),
+            "the counter follows the cursor: {text}"
+        );
+    }
+
+    #[test]
+    fn the_rail_lists_playlists_and_keeps_the_queue_last() {
+        let app = test_app(ArtProtocol::Off);
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("Lists    5"), "{text}");
+        assert!(text.contains("Queue    6"), "{text}");
+    }
+
     #[test]
     fn the_rail_shows_its_jump_keys_and_a_rule() {
         let app = test_app(ArtProtocol::Off);

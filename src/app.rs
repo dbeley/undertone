@@ -18,7 +18,7 @@ use crate::queue::{Queue, QueueItem, Step};
 use crate::render::{ArtProtocol, Painter, Placement};
 use crate::session::Session;
 use crate::subsonic::{
-    Album, AlbumListQuery, AlbumListType, Artist, ArtistDetail, Song, SubsonicClient,
+    Album, AlbumListQuery, AlbumListType, Artist, ArtistDetail, Playlist, Song, SubsonicClient,
 };
 
 /// Cells a thumbnail occupies in the album list.
@@ -39,6 +39,8 @@ pub enum View {
     Favorites,
     Queue,
     ListenLater,
+    Playlists,
+    PlaylistDetail,
     Help,
 }
 
@@ -164,6 +166,11 @@ pub struct App {
     pub artist_play_rank: std::collections::HashMap<String, usize>,
     /// The open artist's albums.
     pub artist_detail: Option<ArtistDetail>,
+    /// The server's playlists, and the one being looked at.
+    pub playlists: Vec<Playlist>,
+    pub playlist_detail: Option<Playlist>,
+    pub playlist_selected: usize,
+    playlists_loaded: bool,
     pub artist_album_selected: usize,
     pub artist_album_scroll: usize,
 
@@ -236,6 +243,10 @@ impl App {
             artist_sort: ArtistSort::default(),
             artist_play_rank: std::collections::HashMap::new(),
             artist_detail: None,
+            playlists: Vec::new(),
+            playlist_detail: None,
+            playlist_selected: 0,
+            playlists_loaded: false,
             artist_album_selected: 0,
             artist_album_scroll: 0,
             favorites: Vec::new(),
@@ -490,6 +501,54 @@ impl App {
     }
 
     // ---------------------------------------------------------------- artists
+
+    /// The server's playlists. Fetched once: the list changes only when someone
+    /// edits it, and `R` re-reads it like every other list.
+    pub fn open_playlists(&mut self) {
+        if !self.playlists_loaded {
+            match self.client.playlists() {
+                Ok(playlists) => self.playlists = playlists,
+                Err(err) => {
+                    self.error(format!("could not load playlists: {err}"));
+                    return;
+                }
+            }
+            self.playlists_loaded = true;
+        }
+        self.jump_to_view(View::Playlists);
+        self.playlist_selected = 0;
+        if self.playlists.is_empty() {
+            self.status("no playlists on this server");
+        }
+    }
+
+    /// One playlist, with its entries.
+    pub fn open_playlist(&mut self, id: &str) {
+        match self.client.playlist(id) {
+            Ok(playlist) => {
+                self.playlist_detail = Some(playlist);
+                self.playlist_selected = 0;
+                self.set_view(View::PlaylistDetail);
+            }
+            Err(err) => self.error(format!("could not load playlist: {err}")),
+        }
+    }
+
+    /// Put the whole playlist in the queue and start at `index`.
+    pub fn play_playlist_track(&mut self, index: usize) {
+        let Some(playlist) = self.playlist_detail.clone() else {
+            return;
+        };
+        if playlist.entry.is_empty() {
+            self.status("this playlist is empty");
+            return;
+        }
+        let index = index.min(playlist.entry.len() - 1);
+        let items: Vec<QueueItem> = playlist.entry.iter().map(queue_item).collect();
+        self.queue.replace(items);
+        self.queue.jump_to(index);
+        self.play_current();
+    }
 
     /// `A`: the artist list, fetched once and kept.
     pub fn open_artists(&mut self) {
@@ -1148,7 +1207,8 @@ impl App {
             KeyCode::Char('2') => self.open_artists(),
             KeyCode::Char('3') => self.open_favorites(),
             KeyCode::Char('4') => self.open_listen_later(),
-            KeyCode::Char('5') => self.jump_to_view(View::Queue),
+            KeyCode::Char('5') => self.open_playlists(),
+            KeyCode::Char('6') => self.jump_to_view(View::Queue),
             KeyCode::Char('*') => self.toggle_star(),
             KeyCode::Char('h') if self.view == View::Albums => self.move_horizontal(-1),
             KeyCode::Char('l') if self.view == View::Albums => self.move_horizontal(1),
@@ -1168,7 +1228,15 @@ impl App {
             KeyCode::Char('s') => self.toggle_shuffle(),
             KeyCode::Char('r') => self.cycle_repeat(),
             KeyCode::Char('S') => self.cycle_sort(),
-            KeyCode::Char('R') => self.load_albums(),
+            KeyCode::Char('R') => {
+                // Re-read whichever list is on screen, and forget the playlist
+                // latch so `5` fetches again after an edit elsewhere.
+                self.playlists_loaded = false;
+                match self.view {
+                    View::Playlists => self.open_playlists(),
+                    _ => self.load_albums(),
+                }
+            }
             _ => {}
         }
     }
@@ -1190,6 +1258,12 @@ impl App {
             View::Favorites => self.favorites.len(),
             View::Queue => self.queue.len(),
             View::ListenLater => self.listen_albums.len(),
+            View::Playlists => self.playlists.len(),
+            View::PlaylistDetail => self
+                .playlist_detail
+                .as_ref()
+                .map(|playlist| playlist.entry.len())
+                .unwrap_or(0),
             View::Help => 0,
         }
     }
@@ -1203,6 +1277,8 @@ impl App {
             View::Favorites => self.favorite_selected,
             View::Queue => self.queue.position().unwrap_or(0),
             View::ListenLater => self.listen_selected,
+            View::Playlists => self.playlist_selected,
+            View::PlaylistDetail => self.playlist_selected,
             View::Help => 0,
         }
     }
@@ -1248,6 +1324,7 @@ impl App {
                 self.queue.jump_to(next);
             }
             View::ListenLater => self.listen_selected = next,
+            View::Playlists | View::PlaylistDetail => self.playlist_selected = next,
             View::Help => {}
         }
     }
@@ -1271,6 +1348,7 @@ impl App {
                 self.queue.jump_to(next);
             }
             View::ListenLater => self.listen_selected = next,
+            View::Playlists | View::PlaylistDetail => self.playlist_selected = next,
             View::Help => {}
         }
     }
@@ -1301,6 +1379,12 @@ impl App {
                 }
             }
             View::Artists => self.open_selected_artist(),
+            View::Playlists => {
+                if let Some(playlist) = self.playlists.get(self.playlist_selected).cloned() {
+                    self.open_playlist(&playlist.id);
+                }
+            }
+            View::PlaylistDetail => self.play_playlist_track(self.playlist_selected),
             View::ArtistDetail => {
                 let album = self
                     .artist_detail
@@ -1891,6 +1975,48 @@ mod tests {
         let status = app.status.as_ref().expect("a message");
         assert!(status.text.contains("failed to play"), "{}", status.text);
         assert!(status.error);
+    }
+
+    #[test]
+    fn choosing_a_playlist_track_queues_the_whole_playlist_from_there() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        let mut playlist = Playlist {
+            id: "pl1".into(),
+            name: "morning".into(),
+            ..Default::default()
+        };
+        playlist.entry = (0..4)
+            .map(|i| Song {
+                id: format!("s{i}"),
+                title: format!("song {i}"),
+                duration: Some(120),
+                ..Default::default()
+            })
+            .collect();
+        app.playlist_detail = Some(playlist);
+
+        app.play_playlist_track(2);
+
+        assert_eq!(app.queue.len(), 4, "the whole playlist is queued");
+        assert_eq!(app.queue.position(), Some(2));
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s2"));
+    }
+
+    #[test]
+    fn an_empty_playlist_says_so_instead_of_playing_nothing() {
+        let mut app = app();
+        app.playlist_detail = Some(Playlist {
+            id: "pl1".into(),
+            name: "empty".into(),
+            ..Default::default()
+        });
+
+        app.play_playlist_track(0);
+
+        assert!(app.queue.is_empty());
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("empty"), "{}", status.text);
     }
 
     // --------------------------------------------------------------- session
