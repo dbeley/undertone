@@ -14,35 +14,72 @@ places. See `docs/COMPATIBILITY.md`.
 Album list, with the rail, the list's own header and the three-column bar.
 
 ```
-  Albums   1│ Queue                                                                                    0
-  Artists  2│ ┌ Queue — 0 tracks · shuffle off · repeat off ───────────────────────────────────────────┐
-  Starred  3│ │                                                                                        │
-  Later    4│ │                                                                                        │
-  Lists    5│ │                                                                                        │
-▸ Queue    6│ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ └────────────────────────────────────────────────────────────────────────────────────────┘
+▸ Albums   1│ Albums · random                                                                      1 / 3
+  Artists  2│        Fixture One
+  Starred  3│ yyy _y Test Artist · 2000
+  Later    4│     y~ 3 tracks
+  Lists    5│        Fixture Two
+  Queue    6│ yyy _y Other Band · 2001
+            │     y~ 3 tracks
+            │        Third
+            │ yyy _y Nobody · 2002
+            │     y~ 3 tracks
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │repeat off · shuffle off        │next
-Enter on an album to start         │Enter play · > skip · h back    │end of queue
+nothing playing                    │fixture 1.16.1                  │next
+Enter on an album to start         │S sort · w grid · Enter · * star│end of queue
+                                   │· ? help                        │
                                    │                                │
+```
+
+## The wall
+
+`w` turns any album list into a wall of covers; each list keeps its own choice.
+
+```
+▸ Albums   1│ Albums · random                                                                      1 / 3
+  Artists  2│     l             l             l
+  Starred  3│
+  Later    4│   yyy yyyy      yyy yyyy      yyy yyyy
+  Lists    5│          y             y             y
+  Queue    6│      y             y             y
+            │ ▸Fixture One   Fixture Two   Third
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing playing                    │albums: grid                    │next
+Enter on an album to start         │S sort · w grid · Enter · * star│end of queue
+                                   │· ? help                        │
                                    │                                │
 ```
 
@@ -51,35 +88,35 @@ Enter on an album to start         │Enter play · > skip · h back    │end o
 The album's cover and its tracks; the bar keeps playing state.
 
 ```
-  Albums   1│ Queue                                                                                    0
-  Artists  2│ ┌ Queue — 0 tracks · shuffle off · repeat off ───────────────────────────────────────────┐
-  Starred  3│ │                                                                                        │
-  Later    4│ │                                                                                        │
-  Lists    5│ │                                                                                        │
-▸ Queue    6│ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ └────────────────────────────────────────────────────────────────────────────────────────┘
+▸ Albums   1│ Album                                                                          Fixture One
+  Artists  2│                      Fixture One
+  Starred  3│                      Test Artist
+  Later    4│                      2000 · 3 tracks
+  Lists    5│
+  Queue    6│                      Enter play · Space pause · > next
+            │
+            │
+            │
+            │
+            │   1. Track 1  3:20
+            │   2. Track 2  3:20
+            │   3. Track 3  3:20
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │repeat off · shuffle off        │next
-Enter on an album to start         │Enter play · > skip · h back    │end of queue
-                                   │                                │
+nothing playing                    │albums: list                    │next
+Enter on an album to start         │Enter play · * star · A artist ·│end of queue
+                                   │h back                          │
                                    │                                │
 ```
 

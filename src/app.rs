@@ -98,6 +98,7 @@ impl ArtistPane {
 #[derive(Debug, Clone)]
 pub enum SearchHit {
     Album(Album),
+    Artist(Artist),
     Song(Song),
 }
 
@@ -114,6 +115,23 @@ pub struct SearchState {
 impl View {
     /// A stable name, for saving which list was open.
     pub fn key(self) -> &'static str {
+        match self {
+            View::Albums => "albums",
+            View::AlbumDetail => "album",
+            View::Artists => "artists",
+            View::ArtistDetail => "artist",
+            View::Favorites => "starred",
+            View::ListenLater => "later",
+            View::Playlists => "playlists",
+            View::PlaylistDetail => "playlist",
+            View::Search => "search",
+            View::Queue => "queue",
+            View::Help => "help",
+        }
+    }
+
+    /// What to call this view in a message.
+    pub fn name(self) -> &'static str {
         match self {
             View::Albums => "albums",
             View::AlbumDetail => "album",
@@ -255,6 +273,8 @@ pub struct App {
     pub forward_stack: Vec<View>,
     pub layout: AlbumLayout,
     pub artist_layout: AlbumLayout,
+    pub favorites_layout: AlbumLayout,
+    pub later_layout: AlbumLayout,
     pub albums: Vec<Album>,
     pub sort: AlbumListType,
     /// The server returned a short page, so there is nothing after this.
@@ -345,6 +365,8 @@ impl App {
             forward_stack: Vec::new(),
             layout: AlbumLayout::List,
             artist_layout: AlbumLayout::List,
+            favorites_layout: AlbumLayout::List,
+            later_layout: AlbumLayout::List,
             albums: Vec::new(),
             sort: AlbumListType::Random,
             // Nothing has been requested yet, so there is no next page to
@@ -643,6 +665,7 @@ impl App {
                     .album
                     .into_iter()
                     .map(SearchHit::Album)
+                    .chain(result.artist.into_iter().map(SearchHit::Artist))
                     .chain(result.song.into_iter().map(SearchHit::Song))
                     .collect();
                 self.search.selected = 0;
@@ -1360,11 +1383,61 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// The layout a view is using, if it has one.
+    pub fn layout_of(&self, view: View) -> Option<AlbumLayout> {
+        match view {
+            View::Albums => Some(self.layout),
+            View::Artists => Some(self.artist_layout),
+            View::Favorites => Some(self.favorites_layout),
+            View::ListenLater => Some(self.later_layout),
+            _ => None,
+        }
+    }
+
+    fn set_layout(&mut self, view: View, layout: AlbumLayout) {
+        match view {
+            View::Albums => self.layout = layout,
+            View::Artists => {
+                self.artist_layout = layout;
+                self.artist_scroll = 0;
+            }
+            View::Favorites => {
+                self.favorites_layout = layout;
+                self.favorite_scroll = 0;
+            }
+            View::ListenLater => {
+                self.later_layout = layout;
+                self.listen_scroll = 0;
+            }
+            _ => {}
+        }
+    }
+
+    /// `w`: rows or a wall, for whichever list you are looking at.
+    pub fn toggle_current_layout(&mut self) {
+        let Some(current) = self.layout_of(self.view) else {
+            self.status("this view has no wall");
+            return;
+        };
+        let next = match current {
+            AlbumLayout::List => AlbumLayout::Grid,
+            AlbumLayout::Grid => AlbumLayout::List,
+        };
+        self.set_layout(self.view, next);
+        // Tiles are painted at different places in each layout, so the old
+        // pixels must go: clear rather than diff.
+        self.needs_clear = true;
+        let label = match next {
+            AlbumLayout::List => "list",
+            AlbumLayout::Grid => "grid",
+        };
+        self.status(format!("{}: {label}", self.view.name()));
+    }
+
     /// A thumbnail wall owns h/j/k/l: on the wall they move between covers, so
     /// history needs no key there.
     pub fn in_wall(&self) -> bool {
-        matches!(self.view, View::Albums) && self.layout == AlbumLayout::Grid
-            || matches!(self.view, View::Artists) && self.artist_layout == AlbumLayout::Grid
+        self.layout_of(self.view) == Some(AlbumLayout::Grid)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -1441,8 +1514,7 @@ impl App {
                 };
                 self.set_view(next);
             }
-            KeyCode::Char('w') if self.view == View::Albums => self.toggle_layout(),
-            KeyCode::Char('w') if self.view == View::Artists => self.toggle_artist_layout(),
+            KeyCode::Char('w') => self.toggle_current_layout(),
             KeyCode::Char('a') => self.toggle_listen_later(),
             KeyCode::Tab if self.view == View::ArtistDetail => {
                 self.artist_pane = self.artist_pane.next()
@@ -1464,22 +1536,8 @@ impl App {
             KeyCode::Char('5') => self.open_playlists(),
             KeyCode::Char('6') => self.jump_to_view(View::Queue),
             KeyCode::Char('*') => self.toggle_star(),
-            KeyCode::Char('h') if self.view == View::Albums && self.layout == AlbumLayout::Grid => {
-                self.move_horizontal(-1)
-            }
-            KeyCode::Char('l') if self.view == View::Albums && self.layout == AlbumLayout::Grid => {
-                self.move_horizontal(1)
-            }
-            KeyCode::Char('h')
-                if self.view == View::Artists && self.artist_layout == AlbumLayout::Grid =>
-            {
-                self.move_artist_horizontal(-1)
-            }
-            KeyCode::Char('l')
-                if self.view == View::Artists && self.artist_layout == AlbumLayout::Grid =>
-            {
-                self.move_artist_horizontal(1)
-            }
+            KeyCode::Char('h') if self.in_wall() => self.move_horizontal(-1),
+            KeyCode::Char('l') if self.in_wall() => self.move_horizontal(1),
             KeyCode::Left if !self.in_wall() => self.go_back(),
             KeyCode::Right if !self.in_wall() => self.go_forward(),
             KeyCode::Char('j') | KeyCode::Down => self.move_vertical(1),
@@ -1578,11 +1636,7 @@ impl App {
             return;
         }
         // In the grid, one visual row is a whole line of tiles.
-        let grid = match self.view {
-            View::Albums => self.layout,
-            View::Artists => self.artist_layout,
-            _ => AlbumLayout::List,
-        };
+        let grid = self.layout_of(self.view).unwrap_or(AlbumLayout::List);
         let step = if grid == AlbumLayout::Grid {
             self.grid_columns(self.list_area.0).max(1) as i32
         } else {
@@ -1691,6 +1745,7 @@ impl App {
             View::PlaylistDetail => self.play_playlist_track(self.playlist_selected),
             View::Search => match self.search.hits.get(self.search.selected).cloned() {
                 Some(SearchHit::Album(album)) => self.open_album(album),
+                Some(SearchHit::Artist(artist)) => self.open_artist(&artist.id, &artist.name),
                 Some(SearchHit::Song(song)) => {
                     self.queue.replace(vec![queue_item(&song)]);
                     self.queue.jump_to(0);
@@ -1747,28 +1802,52 @@ impl App {
             }
             AlbumLayout::Grid => {
                 let cols = self.grid_columns(width).max(1);
-                let visible_rows = (usize::from(height) / usize::from(GRID_TILE_H)).max(1);
-                let selected_row = self.selected / cols;
-                let first_row = self.scroll / cols;
-                if selected_row < first_row {
-                    self.scroll = selected_row * cols;
-                } else if selected_row >= first_row + visible_rows {
-                    self.scroll = (selected_row + 1 - visible_rows) * cols;
-                }
+                scroll_grid(&mut self.selected, &mut self.scroll, cols, height)
             }
         }
     }
 
     /// Keep the listen-later cursor inside its window.
-    pub fn ensure_listen_visible(&mut self, height: u16) {
-        scroll_into_view(
-            &mut self.listen_selected,
-            &mut self.listen_scroll,
-            list_rows(height),
-        );
+    pub fn ensure_listen_visible(&mut self, width: u16, height: u16) {
+        match self.later_layout {
+            AlbumLayout::List => scroll_into_view(
+                &mut self.listen_selected,
+                &mut self.listen_scroll,
+                list_rows(height),
+            ),
+            AlbumLayout::Grid => {
+                let cols = self.grid_columns(width).max(1);
+                scroll_grid(
+                    &mut self.listen_selected,
+                    &mut self.listen_scroll,
+                    cols,
+                    height,
+                )
+            }
+        }
     }
 
-    /// Keep the artists cursor inside its window.
+    /// Keep the favourites cursor inside its window.
+    pub fn ensure_favorite_visible(&mut self, width: u16, height: u16) {
+        match self.favorites_layout {
+            AlbumLayout::List => scroll_into_view(
+                &mut self.favorite_selected,
+                &mut self.favorite_scroll,
+                list_rows(height),
+            ),
+            AlbumLayout::Grid => {
+                let cols = self.grid_columns(width).max(1);
+                scroll_grid(
+                    &mut self.favorite_selected,
+                    &mut self.favorite_scroll,
+                    cols,
+                    height,
+                )
+            }
+        }
+    }
+
+    /// Keep the artist-list cursor inside its window.
     pub fn ensure_artist_visible(&mut self, width: u16, height: u16) {
         match self.artist_layout {
             AlbumLayout::List => scroll_into_view(
@@ -1777,27 +1856,15 @@ impl App {
                 list_rows(height),
             ),
             AlbumLayout::Grid => {
-                // Whole rows, so a scroll does not repaint every tile.
                 let cols = self.grid_columns(width).max(1);
-                let visible_rows = (usize::from(height) / usize::from(GRID_TILE_H)).max(1);
-                let selected_row = self.artist_selected / cols;
-                let first_row = self.artist_scroll / cols;
-                if selected_row < first_row {
-                    self.artist_scroll = selected_row * cols;
-                } else if selected_row >= first_row + visible_rows {
-                    self.artist_scroll = (selected_row + 1 - visible_rows) * cols;
-                }
+                scroll_grid(
+                    &mut self.artist_selected,
+                    &mut self.artist_scroll,
+                    cols,
+                    height,
+                )
             }
         }
-    }
-
-    fn move_artist_horizontal(&mut self, delta: i32) {
-        let len = self.artists.len();
-        if len == 0 {
-            return;
-        }
-        let next = (self.artist_selected as i32 + delta).clamp(0, len as i32 - 1) as usize;
-        self.artist_selected = next;
     }
 
     /// Keep the artist-albums cursor inside its window.
@@ -1805,15 +1872,6 @@ impl App {
         scroll_into_view(
             &mut self.artist_album_selected,
             &mut self.artist_album_scroll,
-            list_rows(height),
-        );
-    }
-
-    /// Keep the favourites cursor inside its window.
-    pub fn ensure_favorite_visible(&mut self, height: u16) {
-        scroll_into_view(
-            &mut self.favorite_selected,
-            &mut self.favorite_scroll,
             list_rows(height),
         );
     }
@@ -1864,6 +1922,20 @@ impl App {
         if let Some(layout) = session.layout.as_deref().and_then(AlbumLayout::from_key) {
             self.layout = layout;
         }
+        if let Some(layout) = session
+            .starred_layout
+            .as_deref()
+            .and_then(AlbumLayout::from_key)
+        {
+            self.favorites_layout = layout;
+        }
+        if let Some(layout) = session
+            .later_layout
+            .as_deref()
+            .and_then(AlbumLayout::from_key)
+        {
+            self.later_layout = layout;
+        }
 
         // Back to the list you were looking at, when getting there costs no
         // request. Everything else opens on the library.
@@ -1878,6 +1950,7 @@ impl App {
     /// What to save on the way out.
     pub fn session_snapshot(&self) -> Session {
         Session {
+            version: crate::session::VERSION,
             queue: self.queue.items().to_vec(),
             position: self.queue.position().unwrap_or(0),
             volume: Some(self.volume),
@@ -1891,6 +1964,8 @@ impl App {
             sort: Some(self.sort.as_str().to_string()),
             artist_sort: Some(self.artist_sort.label().to_string()),
             layout: Some(self.layout.key().to_string()),
+            starred_layout: Some(self.favorites_layout.key().to_string()),
+            later_layout: Some(self.later_layout.key().to_string()),
             view: Some(self.view.key().to_string()),
         }
     }
@@ -1898,37 +1973,6 @@ impl App {
     /// Tiles per row for the current width.
     pub fn grid_columns(&self, width: u16) -> usize {
         (width / GRID_TILE_W).max(1) as usize
-    }
-
-    /// `w` on the artist list: a wall of artist covers.
-    pub fn toggle_artist_layout(&mut self) {
-        self.artist_layout = match self.artist_layout {
-            AlbumLayout::List => AlbumLayout::Grid,
-            AlbumLayout::Grid => AlbumLayout::List,
-        };
-        self.artist_scroll = 0;
-        self.needs_clear = true;
-        let label = match self.artist_layout {
-            AlbumLayout::List => "list",
-            AlbumLayout::Grid => "grid",
-        };
-        self.status(format!("artist view: {label}"));
-    }
-
-    pub fn toggle_layout(&mut self) {
-        self.layout = match self.layout {
-            AlbumLayout::List => AlbumLayout::Grid,
-            AlbumLayout::Grid => AlbumLayout::List,
-        };
-        self.scroll = 0;
-        // Tiles are painted at different places in each layout, so the old
-        // pixels must go: clear rather than diff.
-        self.needs_clear = true;
-        let label = match self.layout {
-            AlbumLayout::List => "list",
-            AlbumLayout::Grid => "grid",
-        };
-        self.status(format!("album view: {label}"));
     }
 }
 
@@ -1950,6 +1994,19 @@ fn scroll_into_view(selected: &mut usize, scroll: &mut usize, visible: usize) {
         *scroll = *selected;
     } else if *selected >= *scroll + visible {
         *scroll = *selected + 1 - visible;
+    }
+}
+
+/// Keep a cursor inside a grid window, in whole rows so tiles do not shift.
+fn scroll_grid(selected: &mut usize, scroll: &mut usize, cols: usize, height: u16) {
+    let cols = cols.max(1);
+    let visible_rows = (usize::from(height) / usize::from(GRID_TILE_H)).max(1);
+    let selected_row = *selected / cols;
+    let first_row = *scroll / cols;
+    if selected_row < first_row {
+        *scroll = selected_row * cols;
+    } else if selected_row >= first_row + visible_rows {
+        *scroll = (selected_row + 1 - visible_rows) * cols;
     }
 }
 
@@ -2576,6 +2633,60 @@ mod tests {
         assert_eq!(app.layout, crate::app::AlbumLayout::List);
     }
 
+    #[test]
+    fn every_album_list_has_its_own_wall() {
+        let mut app = app();
+        app.favorites = vec![Album {
+            id: "al-1".into(),
+            name: "Starred".into(),
+            ..Default::default()
+        }];
+        app.listen_albums = vec![Album {
+            id: "al-2".into(),
+            name: "Kept".into(),
+            ..Default::default()
+        }];
+
+        // Starred.
+        app.view = View::Favorites;
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(app.favorites_layout, AlbumLayout::Grid);
+        assert_eq!(
+            app.later_layout,
+            AlbumLayout::List,
+            "only this list changes"
+        );
+
+        // Later.
+        app.view = View::ListenLater;
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(app.later_layout, AlbumLayout::Grid);
+        assert_eq!(app.layout, AlbumLayout::List, "and not the library");
+    }
+
+    #[test]
+    fn a_view_with_no_wall_says_so() {
+        let mut app = app();
+        app.view = View::Queue;
+        app.handle_key(key(KeyCode::Char('w')));
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("no wall"), "{}", status.text);
+    }
+
+    #[test]
+    fn the_walls_are_remembered_separately() {
+        let mut before = app();
+        before.favorites_layout = AlbumLayout::Grid;
+        before.later_layout = AlbumLayout::List;
+        let saved = before.session_snapshot();
+
+        let mut fresh = app();
+        fresh.restore_session(&saved);
+
+        assert_eq!(fresh.favorites_layout, AlbumLayout::Grid);
+        assert_eq!(fresh.later_layout, AlbumLayout::List);
+    }
+
     // ---------------------------------------------------------------- history
 
     #[test]
@@ -3153,13 +3264,13 @@ mod tests {
         assert_eq!(app.layout, AlbumLayout::Grid);
         assert_eq!(
             app.status.as_ref().map(|s| s.text.as_str()),
-            Some("album view: grid")
+            Some("albums: grid")
         );
         app.handle_key(key(KeyCode::Char('w')));
         assert_eq!(app.layout, AlbumLayout::List);
         assert_eq!(
             app.status.as_ref().map(|s| s.text.as_str()),
-            Some("album view: list")
+            Some("albums: list")
         );
     }
 

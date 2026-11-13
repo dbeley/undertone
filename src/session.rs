@@ -16,8 +16,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::queue::QueueItem;
 
+/// Shape of the file this build writes.
+///
+/// A session written by a newer build is ignored rather than half-read: a
+/// queue is a convenience, and guessing at fields we do not know is worse than
+/// starting empty. Files from before this field existed read as version 0.
+pub const VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
+    #[serde(default)]
+    pub version: u32,
     #[serde(default)]
     pub queue: Vec<QueueItem>,
     /// Position within the queue as it was saved.
@@ -37,6 +46,10 @@ pub struct Session {
     pub artist_sort: Option<String>,
     #[serde(default)]
     pub layout: Option<String>,
+    #[serde(default)]
+    pub starred_layout: Option<String>,
+    #[serde(default)]
+    pub later_layout: Option<String>,
     /// Which list was open, as a stable key. Detail views are not stored: an
     /// album detail needs the album, and reloading it on start would mean a
     /// network round trip before the first frame.
@@ -61,6 +74,9 @@ impl Session {
     pub fn load(path: impl Into<PathBuf>) -> Option<Self> {
         let bytes = fs::read(path.into()).ok()?;
         let session: Session = serde_json::from_slice(&bytes).ok()?;
+        if session.version > VERSION {
+            return None;
+        }
         // A file that says nothing is no session. Anything else is worth
         // reading even with an empty queue: the sort, the layout and the list
         // you were on are saved there too, and quitting without playing
@@ -72,11 +88,13 @@ impl Session {
     }
 
     pub fn save(&self, path: impl Into<PathBuf>) -> io::Result<()> {
+        let mut this = self.clone();
+        this.version = VERSION;
         let path = path.into();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_vec_pretty(self)
+        let json = serde_json::to_vec_pretty(&this)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
         // Temp file plus rename: an interrupted write must not leave a
         // truncated session behind for the next start to choke on.
@@ -111,6 +129,43 @@ mod tests {
     }
 
     #[test]
+    fn a_newer_file_is_ignored_rather_than_half_read() {
+        let path = temp("newer");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Simulate a file written by a later build.
+        std::fs::write(
+            &path,
+            br#"{"version": 9, "queue": [{"id": "a", "title": "A"}]}"#,
+        )
+        .unwrap();
+        assert!(Session::load(&path).is_none());
+    }
+
+    #[test]
+    fn a_file_with_no_version_still_loads() {
+        let path = temp("legacy");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // The shape written before the field existed.
+        std::fs::write(&path, br#"{"queue": [{"id": "a", "title": "A"}]}"#).unwrap();
+        let session = Session::load(&path).expect("a legacy session is readable");
+        assert_eq!(session.position, 0);
+    }
+
+    #[test]
+    fn saving_stamps_the_current_version() {
+        let path = temp("stamp");
+        Session {
+            queue: vec![item("a")],
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["version"], super::VERSION);
+    }
+
+    #[test]
     fn a_saved_session_round_trips() {
         let path = temp("roundtrip");
         let session = Session {
@@ -122,11 +177,16 @@ mod tests {
             artist_sort: Some("a-z".into()),
             layout: Some("grid".into()),
             view: Some("queue".into()),
+            ..Default::default()
         };
         session.save(&path).unwrap();
+        let stamped = Session {
+            version: VERSION,
+            ..session.clone()
+        };
 
         let loaded = Session::load(&path).expect("session");
-        assert_eq!(loaded, session);
+        assert_eq!(loaded, stamped, "saving stamps the version");
         assert_eq!(loaded.queue[1].bit_rate, Some(900), "format survives");
         assert_eq!(loaded.sort.as_deref(), Some("alphabeticalByName"));
         assert_eq!(loaded.layout.as_deref(), Some("grid"));

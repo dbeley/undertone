@@ -315,35 +315,53 @@ pub fn collect_placements(app: &mut App, area: Rect) {
             );
         }
         View::Favorites => {
-            app.ensure_favorite_visible(main.height);
+            app.ensure_favorite_visible(main.width, main.height);
             let covers: Vec<Option<String>> = app
                 .favorites
                 .iter()
                 .map(|album| album.cover_art.clone())
                 .collect();
-            collect_list_placements(
-                app,
-                main,
-                &covers,
-                app.favorite_scroll,
-                app.favorite_selected + visible_albums(main),
-            );
+            match app.favorites_layout {
+                AlbumLayout::List => collect_list_placements(
+                    app,
+                    main,
+                    &covers,
+                    app.favorite_scroll,
+                    app.favorite_selected + visible_albums(main),
+                ),
+                AlbumLayout::Grid => collect_grid_placements(
+                    app,
+                    main,
+                    &covers,
+                    app.favorite_scroll,
+                    app.favorite_selected,
+                ),
+            }
         }
         View::ListenLater => {
-            app.ensure_listen_visible(main.height);
+            app.ensure_listen_visible(main.width, main.height);
             let visible = visible_albums(main);
             let covers: Vec<Option<String>> = app
                 .listen_albums
                 .iter()
                 .map(|album| album.cover_art.clone())
                 .collect();
-            collect_list_placements(
-                app,
-                main,
-                &covers,
-                app.listen_scroll,
-                app.listen_selected + visible,
-            );
+            match app.later_layout {
+                AlbumLayout::List => collect_list_placements(
+                    app,
+                    main,
+                    &covers,
+                    app.listen_scroll,
+                    app.listen_selected + visible,
+                ),
+                AlbumLayout::Grid => collect_grid_placements(
+                    app,
+                    main,
+                    &covers,
+                    app.listen_scroll,
+                    app.listen_selected,
+                ),
+            }
         }
         View::Playlists | View::PlaylistDetail | View::Search | View::Queue | View::Help => {}
     }
@@ -677,7 +695,15 @@ fn draw_thumb_placeholder(frame: &mut Frame, rect: Rect, has_cover: bool) {
 }
 
 fn draw_albums_list(frame: &mut Frame, app: &App, area: Rect) {
-    draw_album_rows(frame, app, area, &app.albums, app.selected, app.scroll);
+    draw_album_listing(
+        frame,
+        app,
+        area,
+        &app.albums,
+        app.selected,
+        app.scroll,
+        app.layout,
+    );
 }
 
 fn draw_listen_later(frame: &mut Frame, app: &App, area: Rect) {
@@ -691,17 +717,43 @@ fn draw_listen_later(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    draw_album_rows(
+    draw_album_listing(
         frame,
         app,
         area,
         &app.listen_albums,
         app.listen_selected,
         app.listen_scroll,
+        app.later_layout,
     );
 }
 
 /// Album rows, shared by the library list, listen later and favourites.
+/// Albums, as rows or as a wall, whichever the view is set to.
+fn draw_album_listing(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    albums: &[crate::subsonic::Album],
+    selected: usize,
+    scroll: usize,
+    layout: AlbumLayout,
+) {
+    match layout {
+        AlbumLayout::List => draw_album_rows(frame, app, area, albums, selected, scroll),
+        AlbumLayout::Grid => {
+            let tiles: Vec<Tile> = albums
+                .iter()
+                .map(|album| Tile {
+                    cover: album.cover_art.as_deref(),
+                    label: &album.name,
+                })
+                .collect();
+            draw_wall(frame, app, area, &tiles, selected, scroll);
+        }
+    }
+}
+
 fn draw_album_rows(
     frame: &mut Frame,
     app: &App,
@@ -1205,13 +1257,14 @@ fn draw_favorites(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    draw_album_rows(
+    draw_album_listing(
         frame,
         app,
         area,
         &app.favorites,
         app.favorite_selected,
         app.favorite_scroll,
+        app.favorites_layout,
     );
 }
 
@@ -1416,6 +1469,14 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
                 "album",
                 album.name.clone(),
                 album.artist.clone().unwrap_or_default(),
+            ),
+            crate::app::SearchHit::Artist(artist) => (
+                "artist",
+                artist.name.clone(),
+                artist
+                    .album_count
+                    .map(|count| format!("{count} albums"))
+                    .unwrap_or_default(),
             ),
             crate::app::SearchHit::Song(song) => (
                 "song",
@@ -2295,6 +2356,34 @@ mod tests {
         assert!(text.contains("Enter to search"), "{text}");
         // The album header is not drawn underneath it.
         assert!(!text.contains("Albums · random"), "{text}");
+    }
+
+    #[test]
+    fn search_rows_name_artists_as_well_as_albums_and_songs() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.view = View::Search;
+        app.search.query = "radio".into();
+        app.search.hits = vec![
+            crate::app::SearchHit::Album(album_with_cover("al1")),
+            crate::app::SearchHit::Artist(crate::subsonic::Artist {
+                id: "ar1".into(),
+                name: "Radiohead".into(),
+                album_count: Some(9),
+                ..Default::default()
+            }),
+            crate::app::SearchHit::Song(crate::subsonic::Song {
+                id: "s1".into(),
+                title: "Idioteque".into(),
+                ..Default::default()
+            }),
+        ];
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("album"), "{text}");
+        assert!(text.contains("artist"), "{text}");
+        assert!(text.contains("Radiohead"), "{text}");
+        assert!(text.contains("9 albums"), "{text}");
+        assert!(text.contains("1 / 3"), "{text}");
     }
 
     #[test]

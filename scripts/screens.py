@@ -15,6 +15,7 @@ import pty
 import select
 import struct
 import sys
+import tempfile
 import termios
 import time
 
@@ -25,10 +26,15 @@ COLS, ROWS = 104, 30
 
 
 class App:
-    def __init__(self, binary, args):
+    def __init__(self, binary, args, state_dir=None):
         env = dict(os.environ)
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("UNDERTONE_PASSWORD", "fixture")
+        # A throwaway state directory: otherwise a session saved by a real run
+        # is restored, and the frames depend on where you last were.
+        if state_dir:
+            env["XDG_STATE_HOME"] = state_dir
+            env["XDG_CACHE_HOME"] = state_dir
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.execve(binary, [binary, *args], env)
@@ -73,9 +79,20 @@ def main():
         app = App(
             binary,
             ["--player=null", "--art=symbols", "--server", server, "--username", "demo"],
+            state_dir=tempfile.mkdtemp(prefix="undertone-screens-"),
         )
         app.wait(6)
         shots.append(("The library", "Album list, with the rail, the list's own header and the three-column bar.", app.wait(0.5)))
+
+        app.send("w", 2.5)  # the wall
+        shots.append(
+            (
+                "The wall",
+                "`w` turns any album list into a wall of covers; each list keeps its own choice.",
+                app.wait(0.6),
+            )
+        )
+        app.send("w", 2.5)  # back to rows
 
         app.send("\r", 3)  # open the first album
         shots.append(("An album", "The album's cover and its tracks; the bar keeps playing state.", app.wait(0.5)))
