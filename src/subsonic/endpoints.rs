@@ -33,6 +33,24 @@ impl AlbumListType {
         }
     }
 
+    /// Every mode the endpoint knows, for parsing a saved key.
+    pub const ALL: [Self; 9] = [
+        Self::Random,
+        Self::Newest,
+        Self::Frequent,
+        Self::Recent,
+        Self::AlphabeticalByName,
+        Self::AlphabeticalByArtist,
+        Self::Starred,
+        Self::ByYear,
+        Self::ByGenre,
+    ];
+
+    /// The inverse of `as_str`, for a saved session.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|mode| mode.as_str() == key)
+    }
+
     /// Modes offered in the UI, in cycling order.
     ///
     /// Exactly what the list is likely to be wanted for: discovery, what is

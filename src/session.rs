@@ -28,6 +28,15 @@ pub struct Session {
     /// How far into the current track it was.
     #[serde(default)]
     pub seconds: f64,
+    /// How the lists were sorted and laid out. Kept here rather than in the
+    /// config because they are workspace state: you set them by pressing S and
+    /// w, not by editing a file.
+    #[serde(default)]
+    pub sort: Option<String>,
+    #[serde(default)]
+    pub artist_sort: Option<String>,
+    #[serde(default)]
+    pub layout: Option<String>,
     /// Which list was open, as a stable key. Detail views are not stored: an
     /// album detail needs the album, and reloading it on start would mean a
     /// network round trip before the first frame.
@@ -36,6 +45,15 @@ pub struct Session {
 }
 
 impl Session {
+    /// True when the file carries no state at all.
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+            && self.view.is_none()
+            && self.sort.is_none()
+            && self.artist_sort.is_none()
+            && self.layout.is_none()
+    }
+
     /// Load, or `None` when there is nothing usable to restore.
     ///
     /// A corrupt or half-written file is treated as no session at all: losing a
@@ -43,7 +61,11 @@ impl Session {
     pub fn load(path: impl Into<PathBuf>) -> Option<Self> {
         let bytes = fs::read(path.into()).ok()?;
         let session: Session = serde_json::from_slice(&bytes).ok()?;
-        if session.queue.is_empty() {
+        // A file that says nothing is no session. Anything else is worth
+        // reading even with an empty queue: the sort, the layout and the list
+        // you were on are saved there too, and quitting without playing
+        // anything must not throw those away.
+        if session.is_empty() {
             return None;
         }
         Some(session)
@@ -96,6 +118,9 @@ mod tests {
             position: 1,
             volume: Some(65),
             seconds: 63.5,
+            sort: Some("alphabeticalByName".into()),
+            artist_sort: Some("a-z".into()),
+            layout: Some("grid".into()),
             view: Some("queue".into()),
         };
         session.save(&path).unwrap();
@@ -103,6 +128,8 @@ mod tests {
         let loaded = Session::load(&path).expect("session");
         assert_eq!(loaded, session);
         assert_eq!(loaded.queue[1].bit_rate, Some(900), "format survives");
+        assert_eq!(loaded.sort.as_deref(), Some("alphabeticalByName"));
+        assert_eq!(loaded.layout.as_deref(), Some("grid"));
     }
 
     #[test]

@@ -186,7 +186,18 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         None => ListenLater::load("/tmp/undertone-listen-later.json"),
     };
     let mut app = App::new(client, settings, player, art, protocol, 70, listen_later);
-    if let Some(info) = server_info.as_ref() {
+    // Restore before the first fetch: the saved sort decides how the album
+    // list is asked for, and refetching after the fact would cost a second
+    // request on every start.
+    let mut restored = false;
+    if let Some(dir) = state_dir() {
+        if let Some(session) = Session::load(dir.join("session.json")) {
+            app.restore_session(&session);
+            restored = true;
+        }
+    }
+
+    if let Some(info) = server_info.as_ref().filter(|_| !restored) {
         // Server and version only: the art backend and cell size were noise in
         // the bar, and the bar now belongs to playback state.
         app.status(format!(
@@ -199,14 +210,6 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     // would bury the one that says which URL was tried.
     if server_info.is_some() {
         app.load_albums();
-    }
-
-    // Restore what was playing last time. Done after the status line so the
-    // "restored" message is the one you actually see.
-    if let Some(dir) = state_dir() {
-        if let Some(session) = Session::load(dir.join("session.json")) {
-            app.restore_session(&session);
-        }
     }
 
     // Warnings last so a degraded start is what you see. Each of these used to

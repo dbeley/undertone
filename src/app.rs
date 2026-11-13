@@ -46,6 +46,23 @@ pub enum View {
     Help,
 }
 
+impl AlbumLayout {
+    pub fn key(self) -> &'static str {
+        match self {
+            AlbumLayout::List => "list",
+            AlbumLayout::Grid => "grid",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "list" => Some(AlbumLayout::List),
+            "grid" => Some(AlbumLayout::Grid),
+            _ => None,
+        }
+    }
+}
+
 /// Which of the artist page's three panes has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArtistPane {
@@ -195,6 +212,12 @@ impl ArtistSort {
             Self::Name => "a-z",
             Self::MostPlayed => "most played",
         }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::MostAlbums, Self::Name, Self::MostPlayed]
+            .into_iter()
+            .find(|sort| sort.label() == key)
     }
 
     fn next(self) -> Self {
@@ -1726,28 +1749,45 @@ impl App {
     /// queue, but nothing is streamed until you press play. An app that starts
     /// making noise because it remembered something is a bad housemate.
     pub fn restore_session(&mut self, session: &Session) {
-        if session.queue.is_empty() {
-            return;
-        }
-        let position = session.position.min(session.queue.len().saturating_sub(1));
-        self.queue.replace(session.queue.clone());
-        self.queue.jump_to(position);
-        if let Some(volume) = session.volume {
-            self.volume = volume;
-            let _ = self.player.set_volume(volume);
-        }
-        if let Some(item) = self.queue.current().cloned() {
-            self.now.duration = f64::from(item.duration.unwrap_or(0));
-            self.now.track = Some(item);
-            self.now.position = session.seconds.max(0.0);
-            self.now.paused = true;
-            self.now.loaded = false;
-            // Applied when playback actually starts: seeking a stream that is
-            // not open does nothing.
-            if session.seconds > 1.0 {
-                self.pending_seek = Some(session.seconds);
+        if !session.queue.is_empty() {
+            let position = session.position.min(session.queue.len().saturating_sub(1));
+            self.queue.replace(session.queue.clone());
+            self.queue.jump_to(position);
+            if let Some(volume) = session.volume {
+                self.volume = volume;
+                let _ = self.player.set_volume(volume);
             }
+            if let Some(item) = self.queue.current().cloned() {
+                self.now.duration = f64::from(item.duration.unwrap_or(0));
+                self.now.track = Some(item);
+                self.now.position = session.seconds.max(0.0);
+                self.now.paused = true;
+                self.now.loaded = false;
+                // Applied when playback actually starts: seeking a stream that
+                // is not open does nothing.
+                if session.seconds > 1.0 {
+                    self.pending_seek = Some(session.seconds);
+                }
+            }
+            self.status("restored last session — p to play");
         }
+
+        // Sort and layout come back, because they are how you left the place
+        // rather than something you would think to set again after every start.
+        if let Some(sort) = session.sort.as_deref().and_then(AlbumListType::from_key) {
+            self.sort = sort;
+        }
+        if let Some(sort) = session
+            .artist_sort
+            .as_deref()
+            .and_then(ArtistSort::from_key)
+        {
+            self.artist_sort = sort;
+        }
+        if let Some(layout) = session.layout.as_deref().and_then(AlbumLayout::from_key) {
+            self.layout = layout;
+        }
+
         // Back to the list you were looking at, when getting there costs no
         // request. Everything else opens on the library.
         match session.view.as_deref().and_then(View::from_key) {
@@ -1755,7 +1795,6 @@ impl App {
             Some(View::ListenLater) => self.open_listen_later(),
             _ => {}
         }
-        self.status("restored last session — p to play");
         self.needs_redraw = true;
     }
 
@@ -1772,6 +1811,9 @@ impl App {
             } else {
                 0.0
             },
+            sort: Some(self.sort.as_str().to_string()),
+            artist_sort: Some(self.artist_sort.label().to_string()),
+            layout: Some(self.layout.key().to_string()),
             view: Some(self.view.key().to_string()),
         }
     }
@@ -2370,6 +2412,7 @@ mod tests {
             volume: Some(40),
             seconds: 95.0,
             view: Some("queue".into()),
+            ..Default::default()
         });
 
         // Shown, not loaded: the clock reflects where it stopped.
@@ -2515,6 +2558,42 @@ mod tests {
         // enough to show the key still routes to the list rather than the page.
         app.handle_key(key(KeyCode::Char('A')));
         assert_ne!(app.view, View::ArtistDetail);
+    }
+
+    #[test]
+    fn sort_and_layout_survive_a_restart() {
+        let mut before = app();
+        before.sort = crate::subsonic::AlbumListType::AlphabeticalByName;
+        before.artist_sort = ArtistSort::Name;
+        before.layout = AlbumLayout::Grid;
+        let saved = before.session_snapshot();
+
+        let mut fresh = app();
+        fresh.restore_session(&saved);
+
+        assert_eq!(
+            fresh.sort,
+            crate::subsonic::AlbumListType::AlphabeticalByName
+        );
+        assert_eq!(fresh.artist_sort, ArtistSort::Name);
+        assert_eq!(fresh.layout, AlbumLayout::Grid);
+    }
+
+    #[test]
+    fn a_session_without_sort_keys_keeps_the_defaults() {
+        let mut fresh = app();
+        let before = (fresh.sort, fresh.artist_sort, fresh.layout);
+
+        fresh.restore_session(&Session {
+            queue: vec![track("a")],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            (fresh.sort, fresh.artist_sort, fresh.layout),
+            before,
+            "an old session file must not reset anything"
+        );
     }
 
     // --------------------------------------------------------------- session
