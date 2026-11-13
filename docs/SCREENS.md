@@ -94,7 +94,7 @@ The album's cover and its tracks; the bar keeps playing state.
   Starred  3│                      Test Artist
   Later    4│                      2000 · 3 tracks
   Lists    5│
-  Queue    6│                      Enter play · Space pause · > next
+  Queue    6│
             │
             │
             │

@@ -1796,14 +1796,11 @@ impl App {
                 }
             }
             View::AlbumDetail => {
-                if self.detail.is_some() {
-                    if self.detail_selected == 0 {
-                        self.play_album();
-                    } else {
-                        // Row 0 is the cover, so track indices start at 1.
-                        self.play_track_from_album(self.detail_selected - 1);
-                    }
-                }
+                // The track list is indexed by the cursor directly: the cover
+                // sits in the header above it, not in the list. Enter plays
+                // from the selected track, and the whole album is queued
+                // behind it either way.
+                self.play_track_from_album(self.detail_selected);
             }
             View::Queue => {
                 self.play_current();
@@ -2765,6 +2762,38 @@ mod tests {
 
         assert_eq!(fresh.favorites_layout, AlbumLayout::Grid);
         assert_eq!(fresh.later_layout, AlbumLayout::List);
+    }
+
+    #[test]
+    fn enter_plays_the_track_under_the_cursor() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.detail = Some(Album {
+            id: "al-1".into(),
+            name: "Album".into(),
+            song: (0..4)
+                .map(|i| Song {
+                    id: format!("t{i}"),
+                    title: format!("track {i}"),
+                    duration: Some(100),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        });
+        app.view = View::AlbumDetail;
+
+        // Every row, in order: the cursor indexes the track list directly, so
+        // Enter must never play the track before the one under it.
+        for index in 0..4 {
+            app.detail_selected = index;
+            app.handle_key(key(KeyCode::Enter));
+            assert_eq!(
+                app.now.track.as_ref().map(|track| track.id.clone()),
+                Some(format!("t{index}")),
+                "Enter on row {index} played the wrong track"
+            );
+        }
     }
 
     // ---------------------------------------------------------------- history

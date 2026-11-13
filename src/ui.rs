@@ -1464,11 +1464,6 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
             format!("{year} · {} tracks", album.song.len()),
             Style::default().fg(MUTED),
         )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Enter play · Space pause · > next",
-            Style::default().fg(MUTED),
-        )),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), info);
 
