@@ -30,9 +30,9 @@ COLS, ROWS = 104, 30
 
 SIXEL = re.compile(rb"\x1bP[0-9;]*q")
 KITTY = re.compile(rb"\x1b_G")
-# Characters chafa uses for symbol art. A cover drawn this way looks nothing
-# like the "▚" placeholder the row draws before art arrives.
-SYMBOL_ART = re.compile(r"[▀▄█▌▐▖▗▘▝░▒▓]")
+# The glyph a cover slot shows before its art arrives. Its absence on a row
+# with a cover means something was painted there.
+PLACEHOLDER = "▚"
 
 
 class Screen:
@@ -201,11 +201,14 @@ def main():
         check(
             "symbols, 104x30",
             library + ["--art=symbols", "--player=null"],
-            # Symbol art is cells: no sixel, no kitty, and cells that look like
-            # chafa output rather than the placeholder.
+            # Symbol art is cells: no graphics escape, and the placeholder is
+            # gone because a real cover took its place. Which glyphs chafa picks
+            # depends on the font it thinks it has, so the placeholder's absence
+            # is the invariant, not any particular character.
             lambda raw, text: not SIXEL.search(raw)
             and not KITTY.search(raw)
-            and bool(SYMBOL_ART.search(text)),
+            and "▚" not in text
+            and "Fixture One" in text,
             expect_blobs=True,
         )
         check(
@@ -213,7 +216,7 @@ def main():
             library + ["--no-art", "--player=null"],
             lambda raw, text: not SIXEL.search(raw)
             and not KITTY.search(raw)
-            and not SYMBOL_ART.search(text),
+            and "▚" in text,  # the cover slot keeps its placeholder
             expect_blobs=False,
         )
         check(
@@ -235,11 +238,22 @@ def main():
             local + ["--art=symbols", "--player=null"],
             lambda raw, text: "cannot reach" in text and "Albums" in text,
         )
+        # A config naming a player that does not exist. PATH starvation cannot
+        # test this under the Nix wrapper, which puts mpv back on PATH itself.
+        config = os.path.join(
+            tempfile.mkdtemp(prefix="undertone-config-"), "config.toml"
+        )
+        with open(config, "w") as handle:
+            handle.write(
+                f'server = "{server}"\n'
+                f'username = "{user}"\n'
+                "[player]\n"
+                'mpv = "/nonexistent/mpv"\n'
+            )
         check(
-            "no helper binaries",
-            library + ["--art=symbols"],
+            "missing player",
+            ["--config", config, "--art=symbols"],
             lambda raw, text: "mpv unavailable" in text and "Albums" in text,
-            env_extra={"PATH": "/nonexistent"},
         )
     finally:
         if fixture:

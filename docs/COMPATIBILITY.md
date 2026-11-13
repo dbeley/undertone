@@ -14,7 +14,7 @@ no art at all       ok
 narrow, 60x24       ok
 too small, 18x4     ok
 dead server         ok
-no helper binaries  ok
+missing player      ok
 ```
 
 Run it with `python3 scripts/degradation.py ./target/release/undertone`. It
@@ -58,8 +58,8 @@ queue list stay.
 | wrong password | warning, empty list, no crash | `tests/errors.rs` |
 | server returns HTML or garbage | decode error naming the endpoint | `tests/errors.rs` |
 | art cache unwritable | art off, a warning, everything else works | `tests/errors.rs` |
-| `mpv` missing | silent player, warning, browsing still works | `no helper binaries` row, `tests/errors.rs` |
-| `chafa` missing | art off, a warning | `no helper binaries` row |
+| `mpv` missing | silent player, warning, browsing still works | `missing player` row, `tests/errors.rs` |
+| `chafa` missing | art off, a warning | `tests/errors.rs` |
 | a track fails mid-playlist | message, playback moves on | `tests/errors.rs`, `src/app.rs` |
 
 ## Not covered here
