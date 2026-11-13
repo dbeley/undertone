@@ -449,6 +449,31 @@ Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic
 
 ---
 
+## Navigation and layout state
+
+Three rules keep the screens coherent as the app grew:
+
+- **An artist is a place, not a list.** Its page has three panes — albums,
+  similar artists, biography — and `Tab` moves between them; the cursor follows
+  the focused pane, and `Enter` acts on what that pane holds. The biography is
+  optional data from `getArtistInfo2`: a server without it still gets a usable
+  page, and the pane says so. `A` on an album opens the artist behind it, using
+  the album's own `artistId` rather than a lookup by name.
+- **Walls are per list.** The library and the artist list can each be a list of
+  rows or a wall of covers, toggled with `w`, and each remembers its own choice:
+  wanting the library as a wall says nothing about wanting artists that way.
+  Both walls come from one `draw_wall`, so tile geometry, whole-row scrolling
+  and art requests cannot drift between them.
+- **History is a stack in both directions.** `h` goes back to where you came
+  from and `l` comes forward again, so going back is reversible; `Left`/`Right`
+  do the same. A wall keeps `h`/`l` for moving between covers, and a rail jump
+  or a fresh drill-down clears the forward history, because those are new
+  journeys rather than a walk back along an old one.
+
+Sort and layout are saved in the session file, not the config: they are how you
+left the place, set by pressing `S` and `w`, and restoring them before the first
+fetch means the album list is asked for in the right order in one request.
+
 ## Tests and validation
 
 | Level | Tool | Covers |

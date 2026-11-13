@@ -91,6 +91,18 @@ def main():
         app.send("5", 2)  # playlists
         shots.append(("Playlists", "The server's playlists, with their size.", app.wait(0.5)))
 
+        app.send("2", 2.5)  # artists
+        shots.append(("Artists", "Artists as a list; `w` turns this into a wall of covers.", app.wait(0.5)))
+
+        app.send("\r", 3)  # open the first artist
+        shots.append(
+            (
+                "An artist",
+                "Three panes: albums, similar artists, biography. Tab moves between them.",
+                app.wait(0.6),
+            )
+        )
+
         app.send("6", 1.5)  # queue
         shots.append(("The queue", "What plays next; Enter starts from the cursor.", app.wait(0.5)))
         app.quit()
