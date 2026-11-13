@@ -64,6 +64,16 @@ fn shell_layout(area: Rect, has_track: bool) -> (Rect, Rect, Option<Rect>) {
     }
 }
 
+/// Where an artist's albums start, below the two-row header.
+fn artist_albums_area(area: Rect) -> Rect {
+    let header = ROW_HEIGHT.min(area.height);
+    Rect {
+        y: area.y + header,
+        height: area.height.saturating_sub(header),
+        ..area
+    }
+}
+
 fn visible_albums(area: Rect) -> usize {
     (area.height / ROW_HEIGHT).max(1) as usize
 }
@@ -163,6 +173,58 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                     }
                 }
             }
+        }
+        View::Artists => {
+            app.ensure_artist_visible(main.height);
+            let covers: Vec<Option<String>> = app
+                .artists
+                .iter()
+                .map(|artist| artist.cover_art.clone())
+                .collect();
+            collect_list_placements(
+                app,
+                main,
+                &covers,
+                app.artist_scroll,
+                app.artist_selected + visible_albums(main),
+            );
+        }
+        View::ArtistDetail => {
+            let albums_area = artist_albums_area(main);
+            app.ensure_artist_album_visible(albums_area.height);
+            let covers: Vec<Option<String>> = app
+                .artist_detail
+                .as_ref()
+                .map(|artist| {
+                    artist
+                        .album
+                        .iter()
+                        .map(|album| album.cover_art.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            collect_list_placements(
+                app,
+                albums_area,
+                &covers,
+                app.artist_album_scroll,
+                app.artist_album_selected + visible_albums(albums_area),
+            );
+        }
+        View::Favorites => {
+            app.ensure_favorite_visible(main.height);
+            let covers: Vec<Option<String>> = app
+                .favorites
+                .iter()
+                .map(|album| album.cover_art.clone())
+                .collect();
+            collect_list_placements(
+                app,
+                main,
+                &covers,
+                app.favorite_scroll,
+                app.favorite_selected + visible_albums(main),
+            );
         }
         View::ListenLater => {
             app.ensure_listen_visible(main.height);
@@ -327,6 +389,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Albums => draw_albums(frame, app, main),
         View::AlbumDetail => draw_album_detail(frame, app, main),
         View::Queue => draw_queue(frame, app, main),
+        View::Artists => draw_artists(frame, app, main),
+        View::ArtistDetail => draw_artist_detail(frame, app, main),
+        View::Favorites => draw_favorites(frame, app, main),
         View::ListenLater => draw_listen_later(frame, app, main),
         View::Help => draw_help(frame, main),
     }
@@ -389,7 +454,7 @@ fn draw_listen_later(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Album rows, shared by the library list and listen later.
+/// Album rows, shared by the library list, listen later and favourites.
 fn draw_album_rows(
     frame: &mut Frame,
     app: &App,
@@ -398,75 +463,210 @@ fn draw_album_rows(
     selected: usize,
     scroll: usize,
 ) {
-    let visible = visible_albums(area);
-    for slot in 0..visible {
+    for slot in 0..visible_albums(area) {
         let index = scroll + slot;
         let Some(album) = albums.get(index) else {
             break;
-        };
-        let row = album_row_rect(area, slot);
-        let is_selected = index == selected;
-
-        let thumb_key = album.cover_art.as_deref().map(|cover| {
-            ArtService::key(
-                cover,
-                u32::from(THUMB_CELLS),
-                u32::from(THUMB_ROWS),
-                app.settings.thumb_colors,
-                app.protocol,
-            )
-        });
-        let has_art = thumb_key
-            .as_deref()
-            .map(|key| app.art.is_ready(key))
-            .unwrap_or(false);
-        if !has_art {
-            let placeholder = Rect {
-                x: row.x,
-                y: row.y,
-                width: THUMB_CELLS,
-                height: THUMB_ROWS,
-            };
-            draw_thumb_placeholder(frame, placeholder, album.cover_art.is_some());
-        }
-
-        let text_area = Rect {
-            x: row.x + THUMB_CELLS + 1,
-            y: row.y,
-            width: row.width.saturating_sub(THUMB_CELLS + 1),
-            height: ROW_HEIGHT,
         };
         let year = album
             .year
             .map(|year| format!(" · {year}"))
             .unwrap_or_default();
         let artist = album.artist.clone().unwrap_or_default();
-        let lines = vec![
+        draw_row(
+            frame,
+            app,
+            area,
+            slot,
+            album.cover_art.as_deref(),
+            &album.name,
+            &format!("{artist}{year}"),
+            index == selected,
+            album.starred.is_some(),
+        );
+    }
+}
+
+/// One two-line list row: thumbnail, title, subtitle.
+///
+/// Shared by every list view: albums, artists, favourites. Keeping one
+/// implementation is what stops the placeholder, the selection marker and the
+/// star prefix from drifting apart between screens.
+#[allow(clippy::too_many_arguments)]
+fn draw_row(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    slot: usize,
+    cover: Option<&str>,
+    title: &str,
+    subtitle: &str,
+    selected: bool,
+    starred: bool,
+) {
+    let row = album_row_rect(area, slot);
+    let has_art = draw_row_thumb(frame, app, row, cover);
+
+    let text_area = Rect {
+        x: row.x + THUMB_CELLS + 1,
+        y: row.y,
+        width: row.width.saturating_sub(THUMB_CELLS + 1),
+        height: ROW_HEIGHT,
+    };
+    let prefix = if starred { "★ " } else { "" };
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("{prefix}{title}"),
+            if selected {
+                selected_style()
+            } else {
+                title_style()
+            },
+        )),
+        Line::from(Span::styled(
+            subtitle.to_string(),
+            Style::default().fg(MUTED),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), text_area);
+
+    if selected && !has_art {
+        let marker = Rect {
+            x: row.x,
+            y: row.y,
+            width: 1,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new("▸").style(selected_style()), marker);
+    }
+}
+
+/// The thumbnail for one row, or its placeholder. Returns whether art is ready.
+fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) -> bool {
+    let thumb_key = cover.map(|cover| {
+        ArtService::key(
+            cover,
+            u32::from(THUMB_CELLS),
+            u32::from(THUMB_ROWS),
+            app.settings.thumb_colors,
+            app.protocol,
+        )
+    });
+    let has_art = thumb_key
+        .as_deref()
+        .map(|key| app.art.is_ready(key))
+        .unwrap_or(false);
+    if !has_art {
+        let placeholder = Rect {
+            x: row.x,
+            y: row.y,
+            width: THUMB_CELLS,
+            height: THUMB_ROWS,
+        };
+        draw_thumb_placeholder(frame, placeholder, cover.is_some());
+    }
+    has_art
+}
+
+fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {
+    if app.artists.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No artists loaded. Press A to fetch them.")
+                .style(Style::default().fg(MUTED)),
+            area,
+        );
+        return;
+    }
+    for slot in 0..visible_albums(area) {
+        let index = app.artist_scroll + slot;
+        let Some(artist) = app.artists.get(index) else {
+            break;
+        };
+        let subtitle = match artist.album_count {
+            Some(1) => "1 album".to_string(),
+            Some(count) => format!("{count} albums"),
+            None => String::new(),
+        };
+        draw_row(
+            frame,
+            app,
+            area,
+            slot,
+            artist.cover_art.as_deref(),
+            &artist.name,
+            &subtitle,
+            index == app.artist_selected,
+            artist.starred.is_some(),
+        );
+    }
+}
+
+fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(artist) = app.artist_detail.as_ref() else {
+        return;
+    };
+    // Two rows for the header keeps the album rows on the same two-line grid
+    // as everywhere else.
+    let albums_area = artist_albums_area(area);
+    let header = Rect {
+        height: albums_area.y - area.y,
+        ..area
+    };
+    let count = match artist.album.len() {
+        1 => "1 album".to_string(),
+        n => format!("{n} albums"),
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(artist.name.clone(), title_style())),
             Line::from(Span::styled(
-                album.name.clone(),
-                if is_selected {
-                    selected_style()
-                } else {
-                    title_style()
-                },
-            )),
-            Line::from(Span::styled(
-                format!("{artist}{year}"),
+                format!("{count}   — Enter to open, h back"),
                 Style::default().fg(MUTED),
             )),
-        ];
-        frame.render_widget(Paragraph::new(lines), text_area);
+        ]),
+        header,
+    );
 
-        if is_selected && !has_art {
-            let marker = Rect {
-                x: row.x,
-                y: row.y,
-                width: 1,
-                height: 1,
-            };
-            frame.render_widget(Paragraph::new("▸").style(selected_style()), marker);
-        }
+    for slot in 0..visible_albums(albums_area) {
+        let index = app.artist_album_scroll + slot;
+        let Some(album) = artist.album.get(index) else {
+            break;
+        };
+        let year = album
+            .year
+            .map(|year| format!(" · {year}"))
+            .unwrap_or_default();
+        draw_row(
+            frame,
+            app,
+            albums_area,
+            slot,
+            album.cover_art.as_deref(),
+            &album.name,
+            &format!("{}{year}", album.artist.clone().unwrap_or_default()),
+            index == app.artist_album_selected,
+            album.starred.is_some(),
+        );
     }
+}
+
+fn draw_favorites(frame: &mut Frame, app: &App, area: Rect) {
+    if app.favorites.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Nothing starred yet. Press * on an album to keep it here.")
+                .style(Style::default().fg(MUTED)),
+            area,
+        );
+        return;
+    }
+    draw_album_rows(
+        frame,
+        app,
+        area,
+        &app.favorites,
+        app.favorite_selected,
+        app.favorite_scroll,
+    );
 }
 
 fn draw_albums_grid(frame: &mut Frame, app: &App, area: Rect) {
@@ -675,8 +875,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("+ / -      volume"),
         Line::from("m          mute"),
         Line::from("Q          queue"),
-        Line::from("L          listen later"),
-        Line::from("a          save / unsave album"),
+        Line::from("L          listen later      A  artists      F  favourites"),
+        Line::from("a          save / unsave album         *  star / unstar"),
         Line::from("S / R      change sort / reload"),
         Line::from("Esc        back"),
         Line::from("q          quit"),
@@ -1032,6 +1232,23 @@ mod tests {
         }
     }
 
+    /// Render one frame into an offscreen buffer and return its text.
+    ///
+    /// Placements are exercised elsewhere; this is for what the user reads.
+    fn rendered_text(app: &App, width: u16, height: u16) -> String {
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
     #[test]
     fn switching_views_erases_previously_painted_art() {
         let mut app = test_app(ArtProtocol::Sixel);
@@ -1104,5 +1321,77 @@ mod tests {
         collect_placements(&mut app, Rect::new(0, 0, 100, 30));
         assert!(app.placements.is_empty());
         assert!(app.painter.plan(&app.placements).is_empty());
+    }
+
+    #[test]
+    fn the_artists_view_lists_names_and_album_counts() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.artists = vec![
+            undertone_artist("ar-1", "Aphex Twin", 3),
+            undertone_artist("ar-2", "Boards of Canada", 1),
+        ];
+        app.view = View::Artists;
+        let text = rendered_text(&app, 80, 24);
+        assert!(text.contains("Aphex Twin"), "{text}");
+        assert!(text.contains("3 albums"), "{text}");
+        assert!(text.contains("1 album"), "singular, not 1 album s: {text}");
+    }
+
+    #[test]
+    fn a_starred_album_is_marked_in_every_list() {
+        let mut app = test_app(ArtProtocol::Off);
+        let mut album = album_with_cover("a");
+        album.starred = Some("2020-01-01".into());
+        app.albums = vec![album];
+        app.view = View::Albums;
+        assert!(rendered_text(&app, 80, 24).contains('★'));
+    }
+
+    #[test]
+    fn the_artist_page_lists_that_artist_albums() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Aphex Twin".into(),
+            album: vec![album_with_cover("1"), album_with_cover("2")],
+            ..Default::default()
+        });
+        app.view = View::ArtistDetail;
+        let text = rendered_text(&app, 80, 24);
+        assert!(text.contains("Aphex Twin"), "{text}");
+        assert!(text.contains("2 albums"), "{text}");
+        assert!(
+            text.contains("Enter to open"),
+            "the page should say how to open: {text}"
+        );
+    }
+
+    #[test]
+    fn every_view_renders_without_panicking_at_a_small_size() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.albums = vec![album_with_cover("a")];
+        app.favorites = vec![album_with_cover("b")];
+        app.artists = vec![undertone_artist("ar-1", "A", 1)];
+        for view in [
+            View::Albums,
+            View::Artists,
+            View::ArtistDetail,
+            View::Favorites,
+            View::Queue,
+            View::ListenLater,
+            View::Help,
+        ] {
+            app.view = view;
+            let _ = rendered_text(&app, 40, 12);
+        }
+    }
+
+    fn undertone_artist(id: &str, name: &str, albums: u32) -> crate::subsonic::Artist {
+        crate::subsonic::Artist {
+            id: id.to_string(),
+            name: name.to_string(),
+            album_count: Some(albums),
+            ..Default::default()
+        }
     }
 }

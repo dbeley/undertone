@@ -15,7 +15,9 @@ use crate::player::{LoadMode, Player, PlayerEvent, ScrobbleAction, Scrobbler, Se
 use crate::queue::{Queue, QueueItem, Step};
 use crate::render::{ArtProtocol, Painter, Placement};
 use crate::session::Session;
-use crate::subsonic::{Album, AlbumListQuery, AlbumListType, Song, SubsonicClient};
+use crate::subsonic::{
+    Album, AlbumListQuery, AlbumListType, Artist, ArtistDetail, Song, SubsonicClient,
+};
 
 /// Cells a thumbnail occupies in the album list.
 pub const THUMB_CELLS: u16 = 4;
@@ -27,6 +29,9 @@ pub const ROW_HEIGHT: u16 = 2;
 pub enum View {
     Albums,
     AlbumDetail,
+    Artists,
+    ArtistDetail,
+    Favorites,
     Queue,
     ListenLater,
     Help,
@@ -92,6 +97,10 @@ pub struct App {
     pub protocol: ArtProtocol,
 
     pub view: View,
+    /// Where `h` goes. A stack rather than a rule, because an album can be
+    /// opened from the library, favourites, an artist or listen later, and
+    /// "back" has to mean the place you came from.
+    pub nav_stack: Vec<View>,
     pub layout: AlbumLayout,
     pub albums: Vec<Album>,
     pub sort: AlbumListType,
@@ -102,6 +111,20 @@ pub struct App {
     pub listen_albums: Vec<Album>,
     pub listen_selected: usize,
     pub listen_scroll: usize,
+
+    /// Artists, flattened from the server's letter index.
+    pub artists: Vec<Artist>,
+    pub artist_selected: usize,
+    pub artist_scroll: usize,
+    /// The open artist's albums.
+    pub artist_detail: Option<ArtistDetail>,
+    pub artist_album_selected: usize,
+    pub artist_album_scroll: usize,
+
+    /// Starred albums.
+    pub favorites: Vec<Album>,
+    pub favorite_selected: usize,
+    pub favorite_scroll: usize,
     /// The track Auto DJ last tried to extend from, so one barren track is not
     /// retried on every transition.
     pub auto_dj_seed: Option<String>,
@@ -148,6 +171,7 @@ impl App {
             protocol,
             settings,
             view: View::Albums,
+            nav_stack: Vec::new(),
             layout: AlbumLayout::List,
             albums: Vec::new(),
             sort: AlbumListType::Random,
@@ -160,6 +184,15 @@ impl App {
             listen_albums,
             listen_selected: 0,
             listen_scroll: 0,
+            artists: Vec::new(),
+            artist_selected: 0,
+            artist_scroll: 0,
+            artist_detail: None,
+            artist_album_selected: 0,
+            artist_album_scroll: 0,
+            favorites: Vec::new(),
+            favorite_selected: 0,
+            favorite_scroll: 0,
             auto_dj_seed: None,
             selected: 0,
             scroll: 0,
@@ -328,6 +361,137 @@ impl App {
         self.listen_albums = self.listen_later.albums();
         if self.listen_selected >= self.listen_albums.len() {
             self.listen_selected = self.listen_albums.len().saturating_sub(1);
+        }
+    }
+
+    // ---------------------------------------------------------------- artists
+
+    /// `A`: the artist list, fetched once and kept.
+    pub fn open_artists(&mut self) {
+        if self.artists.is_empty() {
+            match self.client.artists() {
+                Ok(index) => {
+                    // The server groups artists by initial; flatten it, because
+                    // a flat list is what a keyboard can traverse.
+                    self.artists = index
+                        .index
+                        .into_iter()
+                        .flat_map(|group| group.artist)
+                        .collect();
+                }
+                Err(err) => {
+                    self.error(format!("could not load artists: {err}"));
+                    return;
+                }
+            }
+        }
+        self.set_view(View::Artists);
+        if self.artists.is_empty() {
+            self.status("no artists on this server");
+        }
+    }
+
+    pub fn open_selected_artist(&mut self) {
+        let Some(artist) = self.artists.get(self.artist_selected).cloned() else {
+            return;
+        };
+        match self.client.artist(&artist.id) {
+            Ok(detail) => {
+                self.artist_detail = Some(detail);
+                self.artist_album_selected = 0;
+                self.artist_album_scroll = 0;
+                self.set_view(View::ArtistDetail);
+            }
+            Err(err) => self.error(format!("could not open {}: {err}", artist.name)),
+        }
+    }
+
+    // ------------------------------------------------------------- favourites
+
+    /// `F`: starred albums.
+    pub fn open_favorites(&mut self) {
+        match self.client.starred() {
+            Ok(starred) => {
+                self.favorites = starred.album;
+                self.favorite_selected = self
+                    .favorite_selected
+                    .min(self.favorites.len().saturating_sub(1));
+                self.set_view(View::Favorites);
+                if self.favorites.is_empty() {
+                    self.status("nothing starred yet — press * on an album");
+                }
+            }
+            Err(err) => self.error(format!("could not load favourites: {err}")),
+        }
+    }
+
+    /// The album the cursor is on, and whether it is currently starred.
+    fn album_under_cursor(&self) -> Option<(Album, bool)> {
+        let album = match self.view {
+            View::Albums => self.albums.get(self.selected),
+            View::ListenLater => self.listen_albums.get(self.listen_selected),
+            View::Favorites => self.favorites.get(self.favorite_selected),
+            View::ArtistDetail => self
+                .artist_detail
+                .as_ref()
+                .and_then(|detail| detail.album.get(self.artist_album_selected)),
+            View::AlbumDetail => self.detail.as_ref(),
+            _ => None,
+        }?;
+        Some((album.clone(), album.starred.is_some()))
+    }
+
+    /// `*`: star or unstar the album under the cursor.
+    pub fn toggle_star(&mut self) {
+        let Some((album, starred)) = self.album_under_cursor() else {
+            self.status("no album under the cursor");
+            return;
+        };
+        let result = if starred {
+            self.client.unstar(&album.id)
+        } else {
+            self.client.star(&album.id)
+        };
+        match result {
+            Ok(()) => {
+                // Reflect it locally rather than refetching: the server has
+                // accepted the change, and a round trip here would make the
+                // key feel laggy on a slow link.
+                self.apply_star(&album.id, !starred);
+                let verb = if starred { "unstarred" } else { "starred" };
+                self.status(format!("{verb} {}", album.name));
+            }
+            Err(err) => self.error(format!("could not update star: {err}")),
+        }
+    }
+
+    fn apply_star(&mut self, album_id: &str, starred: bool) {
+        let stamp = if starred {
+            Some(String::from("now"))
+        } else {
+            None
+        };
+        let targets = self
+            .albums
+            .iter_mut()
+            .chain(self.listen_albums.iter_mut())
+            .chain(self.favorites.iter_mut())
+            .chain(self.detail.iter_mut())
+            .chain(
+                self.artist_detail
+                    .iter_mut()
+                    .flat_map(|detail| detail.album.iter_mut()),
+            );
+        for album in targets {
+            if album.id == album_id {
+                album.starred = stamp.clone();
+            }
+        }
+        if !starred {
+            self.favorites.retain(|album| album.id != album_id);
+            if self.favorite_selected >= self.favorites.len() {
+                self.favorite_selected = self.favorites.len().saturating_sub(1);
+            }
         }
     }
 
@@ -677,10 +841,21 @@ impl App {
     /// movement between views has to clear the screen rather than diff it.
     pub fn set_view(&mut self, view: View) {
         if self.view != view {
+            self.nav_stack.push(self.view);
             self.view = view;
             self.needs_clear = true;
             self.needs_redraw = true;
         }
+    }
+
+    /// `h` / Esc: return to wherever this view was opened from.
+    pub fn go_back(&mut self) {
+        let target = self.nav_stack.pop().unwrap_or(View::Albums);
+        if target != self.view {
+            self.view = target;
+            self.needs_clear = true;
+        }
+        self.needs_redraw = true;
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -717,14 +892,14 @@ impl App {
         }
 
         if self.view == View::Help {
-            self.set_view(View::Albums);
+            self.go_back();
             return;
         }
 
         match key.code {
             KeyCode::Char('q') if key.modifiers.is_empty() => self.should_quit = true,
             KeyCode::Esc | KeyCode::Char('h') if self.view != View::Albums => {
-                self.set_view(View::Albums);
+                self.go_back();
             }
             KeyCode::Char('?') => self.set_view(View::Help),
             KeyCode::Char('Q') => {
@@ -738,6 +913,9 @@ impl App {
             KeyCode::Char('w') if self.view == View::Albums => self.toggle_layout(),
             KeyCode::Char('a') => self.toggle_listen_later(),
             KeyCode::Char('L') => self.open_listen_later(),
+            KeyCode::Char('A') => self.open_artists(),
+            KeyCode::Char('F') => self.open_favorites(),
+            KeyCode::Char('*') => self.toggle_star(),
             KeyCode::Char('h') if self.view == View::Albums => self.move_horizontal(-1),
             KeyCode::Char('l') if self.view == View::Albums => self.move_horizontal(1),
             KeyCode::Char('j') | KeyCode::Down => self.move_vertical(1),
@@ -769,6 +947,13 @@ impl App {
                 .as_ref()
                 .map(|album| album.song.len())
                 .unwrap_or(0),
+            View::Artists => self.artists.len(),
+            View::ArtistDetail => self
+                .artist_detail
+                .as_ref()
+                .map(|artist| artist.album.len())
+                .unwrap_or(0),
+            View::Favorites => self.favorites.len(),
             View::Queue => self.queue.len(),
             View::ListenLater => self.listen_albums.len(),
             View::Help => 0,
@@ -779,6 +964,9 @@ impl App {
         match self.view {
             View::Albums => self.selected,
             View::AlbumDetail => self.detail_selected,
+            View::Artists => self.artist_selected,
+            View::ArtistDetail => self.artist_album_selected,
+            View::Favorites => self.favorite_selected,
             View::Queue => self.queue.position().unwrap_or(0),
             View::ListenLater => self.listen_selected,
             View::Help => 0,
@@ -819,6 +1007,9 @@ impl App {
                 self.maybe_load_more();
             }
             View::AlbumDetail => self.detail_selected = next,
+            View::Artists => self.artist_selected = next,
+            View::ArtistDetail => self.artist_album_selected = next,
+            View::Favorites => self.favorite_selected = next,
             View::Queue => {
                 self.queue.jump_to(next);
             }
@@ -839,6 +1030,9 @@ impl App {
                 self.maybe_load_more();
             }
             View::AlbumDetail => self.detail_selected = next,
+            View::Artists => self.artist_selected = next,
+            View::ArtistDetail => self.artist_album_selected = next,
+            View::Favorites => self.favorite_selected = next,
             View::Queue => {
                 self.queue.jump_to(next);
             }
@@ -869,6 +1063,22 @@ impl App {
             }
             View::ListenLater => {
                 if let Some(album) = self.listen_albums.get(self.listen_selected).cloned() {
+                    self.open_album(album);
+                }
+            }
+            View::Artists => self.open_selected_artist(),
+            View::ArtistDetail => {
+                let album = self
+                    .artist_detail
+                    .as_ref()
+                    .and_then(|artist| artist.album.get(self.artist_album_selected))
+                    .cloned();
+                if let Some(album) = album {
+                    self.open_album(album);
+                }
+            }
+            View::Favorites => {
+                if let Some(album) = self.favorites.get(self.favorite_selected).cloned() {
                     self.open_album(album);
                 }
             }
@@ -906,12 +1116,38 @@ impl App {
 
     /// Keep the listen-later cursor inside its window.
     pub fn ensure_listen_visible(&mut self, height: u16) {
-        let visible = (usize::from(height) / usize::from(ROW_HEIGHT)).max(1);
-        if self.listen_selected < self.listen_scroll {
-            self.listen_scroll = self.listen_selected;
-        } else if self.listen_selected >= self.listen_scroll + visible {
-            self.listen_scroll = self.listen_selected + 1 - visible;
-        }
+        scroll_into_view(
+            &mut self.listen_selected,
+            &mut self.listen_scroll,
+            list_rows(height),
+        );
+    }
+
+    /// Keep the artists cursor inside its window.
+    pub fn ensure_artist_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.artist_selected,
+            &mut self.artist_scroll,
+            list_rows(height),
+        );
+    }
+
+    /// Keep the artist-albums cursor inside its window.
+    pub fn ensure_artist_album_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.artist_album_selected,
+            &mut self.artist_album_scroll,
+            list_rows(height),
+        );
+    }
+
+    /// Keep the favourites cursor inside its window.
+    pub fn ensure_favorite_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.favorite_selected,
+            &mut self.favorite_scroll,
+            list_rows(height),
+        );
     }
 
     // ---------------------------------------------------------------- session
@@ -971,6 +1207,20 @@ impl App {
             AlbumLayout::Grid => "grid",
         };
         self.status(format!("album view: {label}"));
+    }
+}
+
+/// How many list rows fit in `height`, at two lines per row.
+fn list_rows(height: u16) -> usize {
+    (usize::from(height) / usize::from(ROW_HEIGHT)).max(1)
+}
+
+/// Slide a window so `selected` is visible.
+fn scroll_into_view(selected: &mut usize, scroll: &mut usize, visible: usize) {
+    if *selected < *scroll {
+        *scroll = *selected;
+    } else if *selected >= *scroll + visible {
+        *scroll = *selected + 1 - visible;
     }
 }
 
@@ -1357,6 +1607,74 @@ mod tests {
         assert_eq!(app.view, View::Albums);
     }
 
+    // -------------------------------------------------------------- navigation
+
+    fn artist(id: &str, name: &str) -> Artist {
+        Artist {
+            id: id.to_string(),
+            name: name.to_string(),
+            album_count: Some(2),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_back_stack_returns_to_where_you_came_from() {
+        let mut app = app();
+        app.set_view(View::Artists);
+        app.set_view(View::ArtistDetail);
+
+        app.go_back();
+        assert_eq!(
+            app.view,
+            View::Artists,
+            "an artist page goes back to artists"
+        );
+        app.go_back();
+        assert_eq!(app.view, View::Albums);
+
+        // At the library there is nothing to pop; it must not wander.
+        app.go_back();
+        assert_eq!(app.view, View::Albums);
+    }
+
+    #[test]
+    fn a_opens_the_artist_list_without_refetching() {
+        let mut app = app();
+        app.artists = vec![artist("ar-1", "Aphex Twin")];
+        app.handle_key(key(KeyCode::Char('A')));
+
+        assert_eq!(app.view, View::Artists);
+        // The server in tests does not exist, so reaching it would have set an
+        // error: a pre-filled list must not be refetched.
+        assert!(app.status.is_none(), "no request should have been made");
+    }
+
+    #[test]
+    fn artists_navigate_with_the_vim_keys() {
+        let mut app = app();
+        app.artists = vec![artist("1", "A"), artist("2", "B"), artist("3", "C")];
+        app.view = View::Artists;
+
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.artist_selected, 1);
+        app.handle_key(key(KeyCode::Char('G')));
+        assert_eq!(app.artist_selected, 2);
+        app.handle_key(key(KeyCode::Char('g')));
+        assert_eq!(app.artist_selected, 0);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.artist_selected, 0, "clamped at the top");
+    }
+
+    #[test]
+    fn starring_nothing_says_so_instead_of_calling_the_server() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char('*')));
+
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("no album"), "{}", status.text);
+        assert!(!status.error, "an empty cursor is not an error");
+    }
     #[test]
     fn q_quits_and_escape_goes_back() {
         let mut app = app();

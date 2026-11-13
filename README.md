@@ -102,9 +102,14 @@ Enter      open album · play track    p / Space  play / pause
 > / <      next / prev         f / b   seek ±10s
 s / r      shuffle / repeat    +/-     volume      m  mute
 Q          queue               ?       help        Esc back
-L          listen later        a       save / unsave album
+L          listen later        A       artists     F  favourites
+a          save / unsave album *       star / unstar
 S / R      change sort / reload         q   quit
 ```
+
+`h` and `Esc` go back to the screen you came from, not always to the library:
+an album opened from an artist page returns to that artist, and an album opened
+from favourites returns to favourites.
 
 The album list pages as you scroll: a hundred albums at a time, fetched when
 the cursor gets within a screen of the end, and a short page means the end of
