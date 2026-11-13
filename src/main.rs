@@ -20,7 +20,7 @@ use undertone::config::{CliOverrides, Config, Settings};
 use undertone::event::{Events, Input};
 use undertone::listen_later::ListenLater;
 use undertone::player::{MpvOptions, MpvPlayer, NullPlayer, Player};
-use undertone::render::{ArtProtocol, Caps, CellSize, ImageSource};
+use undertone::render::{ArtProtocol, Caps, ImageSource};
 use undertone::session::Session;
 use undertone::subsonic::{SubsonicClient, SubsonicConfig};
 use undertone::ui;
@@ -75,13 +75,6 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut protocol = resolve_protocol(&args, &settings);
-    let caps = Caps {
-        protocol,
-        cell: CellSize::detect(),
-        truecolor: std::env::var("COLORTERM")
-            .map(|value| value.contains("truecolor") || value.contains("24bit"))
-            .unwrap_or(false),
-    };
 
     let make_source = |protocol: ArtProtocol| -> Option<Arc<dyn ImageSource>> {
         if protocol.is_pixel() {
@@ -145,13 +138,12 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut app = App::new(client, settings, player, art, protocol, 70, listen_later);
     if let Some(info) = server_info.as_ref() {
+        // Server and version only: the art backend and cell size were noise in
+        // the bar, and the bar now belongs to playback state.
         app.status(format!(
-            "{} {} · art {} · cell {}x{}",
+            "{} {}",
             info.server_type.as_deref().unwrap_or("subsonic"),
-            info.version,
-            protocol.label(),
-            caps.cell.width,
-            caps.cell.height
+            info.version
         ));
     }
     // Skip the fetch when the server did not answer: a second failure message

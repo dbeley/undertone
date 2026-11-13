@@ -247,6 +247,20 @@ fn worker_loop(
         let mut pending: Vec<Job> = Vec::new();
         for job in batch {
             if let Some(blob) = blobs.get(&job.key) {
+                // kitty images are deleted by id, and a blob cached before ids
+                // were injected has none — so it could be painted and never
+                // removed. Re-tag on the way out (the tag is idempotent) and
+                // rewrite the entry so old caches heal themselves.
+                let blob = match renderer.protocol() {
+                    ArtProtocol::Kitty => {
+                        let tagged = clear::tag_kitty(&blob, clear::kitty_id(&job.key));
+                        if tagged != blob {
+                            let _ = blobs.put(&job.key, &tagged);
+                        }
+                        tagged
+                    }
+                    _ => blob,
+                };
                 let dimensions = dimensions_of(renderer.protocol(), &blob);
                 if done_tx
                     .send(Done {

@@ -41,13 +41,17 @@ fn selected_style() -> Style {
 
 /// Rows the now-playing bar occupies, top border included: two lines beside
 /// the cover — track and clock, then progress plus album/format/next.
-pub const NOW_PLAYING_HEIGHT: u16 = 3;
+/// Rows the bottom bar occupies, top border included: a title line and a
+/// progress line for the track, state and keys, then the queue preview.
+pub const BAR_HEIGHT: u16 = 5;
 
 /// Width of the navigation rail, and the narrowest window that keeps it.
-pub const SIDEBAR_W: u16 = 14;
+pub const SIDEBAR_W: u16 = 12;
 pub const SIDEBAR_MIN_WIDTH: u16 = 64;
 /// One column of rule between the rail and the view, then one of air.
 const SIDEBAR_GAP: u16 = 2;
+/// One row above every view for its title and sort.
+const HEADER_HEIGHT: u16 = 1;
 
 /// Where each part of the screen lives.
 struct Shell {
@@ -55,63 +59,60 @@ struct Shell {
     sidebar: Option<Rect>,
     /// The rule that separates the rail from the view.
     divider: Option<Rect>,
-    /// The view itself.
-    content: Rect,
-    status: Rect,
-    /// Always present: an empty bar still shows the key hints.
-    now_playing: Rect,
+    /// View title and sort, above the view's own content.
+    header: Rect,
+    /// The list itself.
+    body: Rect,
+    /// Always present: it carries state, keys and the queue.
+    bar: Rect,
 }
 
-/// Split the screen into [sidebar | content], status, and now-playing.
+/// Split the screen into [sidebar | header + body], and the bar.
 fn shell_layout(area: Rect) -> Shell {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            Constraint::Length(1 + NOW_PLAYING_HEIGHT),
-        ])
+        .constraints([Constraint::Min(4), Constraint::Length(BAR_HEIGHT)])
         .split(area);
-    let bottom = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(NOW_PLAYING_HEIGHT),
-        ])
-        .split(rows[1]);
+    let top = rows[0];
 
-    // On a small terminal a rail would eat a third of the width; the status
-    // line still says which sort is in use, so the view stays usable.
-    if area.width < SIDEBAR_MIN_WIDTH {
-        return Shell {
-            sidebar: None,
-            divider: None,
-            content: rows[0],
-            status: bottom[0],
-            now_playing: bottom[1],
-        };
-    }
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(SIDEBAR_W + SIDEBAR_GAP),
-            Constraint::Min(20),
-        ])
-        .split(rows[0]);
-    // The rail keeps its own rect; the rule and the gap are drawn into the
-    // first two columns of what follows, so nothing ever touches the view.
+    let (sidebar, divider, right) = if area.width < SIDEBAR_MIN_WIDTH {
+        (None, None, top)
+    } else {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(SIDEBAR_W + SIDEBAR_GAP),
+                Constraint::Min(20),
+            ])
+            .split(top);
+        (
+            Some(Rect {
+                width: SIDEBAR_W,
+                ..columns[0]
+            }),
+            Some(Rect {
+                x: columns[0].x + SIDEBAR_W,
+                width: 1,
+                ..columns[0]
+            }),
+            columns[1],
+        )
+    };
+
+    let header = Rect {
+        height: HEADER_HEIGHT.min(right.height),
+        ..right
+    };
     Shell {
-        sidebar: Some(Rect {
-            width: SIDEBAR_W,
-            ..columns[0]
-        }),
-        divider: Some(Rect {
-            x: columns[0].x + SIDEBAR_W,
-            width: 1,
-            ..columns[0]
-        }),
-        content: columns[1],
-        status: bottom[0],
-        now_playing: bottom[1],
+        sidebar,
+        divider,
+        header,
+        body: Rect {
+            y: right.y + header.height,
+            height: right.height.saturating_sub(header.height),
+            ..right
+        },
+        bar: rows[1],
     }
 }
 
@@ -135,19 +136,8 @@ fn nav_owner(view: View) -> View {
 
 fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     let current = nav_owner(app.view);
-    if area.height > 2 {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "undertone",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ))),
-            Rect { height: 1, ..area },
-        );
-    }
     for (index, (view, label, key)) in NAV_ITEMS.iter().enumerate() {
-        // One blank row under the title, so the rail does not start flush
-        // against it.
-        let y = area.y + 2 + index as u16;
+        let y = area.y + index as u16;
         if y >= area.y + area.height {
             break;
         }
@@ -163,11 +153,8 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                 if active { "▸ " } else { "  " },
                 Style::default().fg(ACCENT),
             ),
-            // Two columns for the marker, ten for the label, one for the key:
-            // the rail is thirteen wide, and the key used to be clipped off
-            // the end of it.
             Span::styled(
-                format!("{label:<10}"),
+                format!("{label:<9}"),
                 if active {
                     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
                 } else {
@@ -201,27 +188,6 @@ fn visible_albums(area: Rect) -> usize {
     (area.height / ROW_HEIGHT).max(1) as usize
 }
 
-/// The bar's content area, below its top border.
-fn now_playing_inner(area: Rect) -> Rect {
-    Block::default().borders(Borders::TOP).inner(area)
-}
-
-/// Cells the bar's cover occupies. Deliberately smaller than a list
-/// thumbnail: the bar is two lines tall, and a three-row cover would push the
-/// progress line off it.
-const BAR_COVER_CELLS: u16 = 4;
-const BAR_COVER_ROWS: u16 = 2;
-
-/// Where the cover sits inside the bar.
-fn now_playing_cover_rect(inner: Rect) -> Rect {
-    Rect {
-        x: inner.x,
-        y: inner.y,
-        width: BAR_COVER_CELLS.min(inner.width / 2),
-        height: BAR_COVER_ROWS.min(inner.height),
-    }
-}
-
 fn album_row_rect(area: Rect, index_in_view: usize) -> Rect {
     Rect {
         x: area.x,
@@ -241,8 +207,7 @@ pub fn collect_placements(app: &mut App, area: Rect) {
     }
 
     let shell = shell_layout(area);
-    let main = shell.content;
-    let now = shell.now_playing;
+    let main = shell.body;
     app.list_area = (main.width, main.height);
 
     match app.view {
@@ -371,35 +336,6 @@ pub fn collect_placements(app: &mut App, area: Rect) {
         }
         View::Queue | View::Help => {}
     }
-
-    // The now-playing cover lives in the bottom bar and is drawn under every
-    // view, so it is the last placement added rather than a per-view concern.
-    {
-        let now_area = now;
-        if let Some(track) = app.now.track.as_ref() {
-            if let Some(cover) = track.cover_art.as_deref() {
-                let rect = now_playing_cover_rect(now_playing_inner(now_area));
-                if rect.width > 0 && rect.height > 0 {
-                    let key = app.art.request(
-                        cover,
-                        u32::from(rect.width),
-                        u32::from(rect.height),
-                        app.settings.thumb_colors,
-                        false,
-                    );
-                    if app.art.is_ready(&key) {
-                        app.placements.push(Placement::new(
-                            key,
-                            rect.y,
-                            rect.x,
-                            rect.height,
-                            rect.width,
-                        ));
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Place list thumbnails for a slice of album covers.
@@ -511,8 +447,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         );
         return;
     }
+
     let shell = shell_layout(area);
-    let main = shell.content;
     if let Some(sidebar) = shell.sidebar {
         draw_sidebar(frame, app, sidebar);
     }
@@ -529,19 +465,84 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
     }
 
+    draw_view_header(frame, app, shell.header);
     match app.view {
-        View::Albums => draw_albums(frame, app, main),
-        View::AlbumDetail => draw_album_detail(frame, app, main),
-        View::Queue => draw_queue(frame, app, main),
-        View::Artists => draw_artists(frame, app, main),
-        View::ArtistDetail => draw_artist_detail(frame, app, main),
-        View::Favorites => draw_favorites(frame, app, main),
-        View::ListenLater => draw_listen_later(frame, app, main),
-        View::Help => draw_help(frame, main),
+        View::Albums => draw_albums(frame, app, shell.body),
+        View::AlbumDetail => draw_album_detail(frame, app, shell.body),
+        View::Artists => draw_artists(frame, app, shell.body),
+        View::ArtistDetail => draw_artist_detail(frame, app, shell.body),
+        View::Favorites => draw_favorites(frame, app, shell.body),
+        View::Queue => draw_queue(frame, app, shell.body),
+        View::ListenLater => draw_listen_later(frame, app, shell.body),
+        View::Help => draw_help(frame, shell.body),
     }
 
-    draw_status_bar(frame, app, shell.status);
-    draw_now_playing(frame, app, shell.now_playing);
+    draw_bar(frame, app, shell.bar);
+}
+
+/// The view's name and sort, on its own row above the list.
+///
+/// Sorting used to live in a status line shared with playback state, which made
+/// it impossible to find and made the list jump when that line appeared.
+fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
+    let (title, sort) = match app.view {
+        View::Albums => ("Albums", Some(app.sort.label())),
+        View::AlbumDetail => ("Album", None),
+        View::Artists => ("Artists", Some(app.artist_sort.label())),
+        View::ArtistDetail => ("Artist", None),
+        View::Favorites => ("Starred", None),
+        View::ListenLater => ("Listen later", None),
+        View::Queue => ("Queue", None),
+        View::Help => ("Help", None),
+    };
+    let counter = match app.view {
+        View::Albums => format!("{} / {}", app.selected + 1, app.albums.len()),
+        View::Artists => format!("{} / {}", app.artist_selected + 1, app.artists.len()),
+        View::Favorites => format!("{}", app.favorites.len()),
+        View::ListenLater => format!("{}", app.listen_albums.len()),
+        View::Queue => format!("{}", app.queue.len()),
+        View::AlbumDetail => app
+            .detail
+            .as_ref()
+            .map(|album| album.name.clone())
+            .unwrap_or_default(),
+        View::ArtistDetail => app
+            .artist_detail
+            .as_ref()
+            .map(|artist| artist.name.clone())
+            .unwrap_or_default(),
+        View::Help => String::new(),
+    };
+
+    let counter_w = (counter.chars().count() as u16).min(area.width / 2);
+    let mut spans = vec![Span::styled(title, title_style())];
+    if let Some(sort) = sort {
+        spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        spans.push(Span::styled(sort, Style::default().fg(ACCENT)));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            width: area.width.saturating_sub(counter_w + 1),
+            height: 1,
+            ..area
+        },
+    );
+    if counter_w > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                counter,
+                Style::default().fg(MUTED),
+            )))
+            .alignment(Alignment::Right),
+            Rect {
+                x: area.x + area.width - counter_w,
+                width: counter_w,
+                height: 1,
+                ..area
+            },
+        );
+    }
 }
 
 fn draw_albums(frame: &mut Frame, app: &App, area: Rect) {
@@ -1053,121 +1054,70 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
-fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (text, style) = match app.status.as_ref() {
-        Some(status) if status.at.elapsed() < crate::app::STATUS_TTL => (
-            status.text.clone(),
-            if status.error {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(ACCENT)
-            },
-        ),
-        // The server address used to lead this line. It is fixed at startup
-        // and says nothing while you are listening, so it gave up its space to
-        // the play state.
-        _ => (
-            format!(
-                "{} · art {} · shuffle {} · repeat {} · vol {}{}{}",
-                app.sort_label(),
-                app.protocol.label(),
-                if app.queue.is_shuffled() { "on" } else { "off" },
-                app.queue.repeat().label(),
-                app.volume,
-                if app.muted { " muted" } else { "" },
-                if app.settings.auto_dj {
-                    " · autodj"
-                } else {
-                    ""
-                },
-            ),
-            Style::default().fg(MUTED),
-        ),
-    };
-    frame.render_widget(Paragraph::new(Line::from(text)).style(style), area);
-}
-
-fn draw_now_playing(frame: &mut Frame, app: &App, area: Rect) {
+/// The bottom bar: playing track, state and keys, then the queue.
+///
+/// Three equal columns. Everything here is about the next few seconds, which is
+/// why it is allowed to take five rows on a screen where every row costs.
+fn draw_bar(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::TOP);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if inner.width < 12 || inner.height < 2 {
+    if inner.width < 30 || inner.height < 2 {
         return;
     }
 
-    // Hints live on the right of the second line. They are the answer to "what
-    // can I press here", so they get reserved space rather than being the first
-    // thing truncated.
-    let hints = key_hints(app.view);
-    let hint_w = if hints.is_empty() || inner.width < 70 {
-        0
-    } else {
-        (hints.chars().count() as u16 + 1).min(inner.width / 2)
-    };
-    let body_w = inner.width - hint_w;
-
-    let cover_rect = now_playing_cover_rect(Rect {
-        width: body_w,
-        ..inner
-    });
-
-    let Some(track) = app.now.track.as_ref() else {
-        // No track: an empty slot, one line saying so, and the hints.
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-            Rect {
-                width: cover_rect.width.max(2),
-                height: cover_rect.height.max(2),
-                ..cover_rect
-            },
-        );
-        let text_x = cover_rect.x + cover_rect.width + 1;
-        if body_w > cover_rect.width + 2 {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Length(1),
+            Constraint::Ratio(1, 3),
+            Constraint::Length(1),
+            Constraint::Ratio(1, 3),
+        ])
+        .split(inner);
+    for rule in [columns[1], columns[3]] {
+        for offset in 0..rule.height {
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "nothing playing — Enter on an album to start",
-                    Style::default().fg(MUTED),
-                ))),
+                Paragraph::new("│").style(Style::default().fg(Color::DarkGray)),
                 Rect {
-                    x: text_x,
-                    y: inner.y,
-                    width: body_w.saturating_sub(cover_rect.width + 1),
+                    y: rule.y + offset,
                     height: 1,
+                    ..rule
                 },
             );
         }
-        draw_hints(frame, inner, body_w, hint_w, hints);
-        return;
+    }
+
+    draw_bar_track(frame, app, columns[0]);
+    draw_bar_state(frame, app, columns[2]);
+    draw_bar_queue(frame, app, columns[4]);
+}
+
+fn draw_bar_track(frame: &mut Frame, app: &App, area: Rect) {
+    let row = |offset: u16| Rect {
+        y: area.y + offset,
+        height: 1,
+        ..area
     };
 
-    let cover_w = cover_rect.width;
-    if !app.protocol.is_pixel() || track.cover_art.is_none() {
-        draw_thumb_placeholder(frame, cover_rect, track.cover_art.is_some());
-    } else {
-        for row in cover_rect.y..cover_rect.y + cover_rect.height {
-            for col in cover_rect.x..cover_rect.x + cover_rect.width {
-                frame.buffer_mut()[(col, row)].set_symbol(" ");
-            }
-        }
-    }
-
-    let text_x = cover_rect.x + cover_w + 1;
-    let text_w = inner.x + body_w - text_x;
-    if text_w < 8 {
-        draw_hints(frame, inner, body_w, hint_w, hints);
+    let Some(track) = app.now.track.as_ref() else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "nothing playing",
+                Style::default().fg(MUTED),
+            ))),
+            row(0),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Enter on an album to start",
+                Style::default().fg(Color::DarkGray),
+            ))),
+            row(1),
+        );
         return;
-    }
-
-    // Line one: track, artist, and the clock flush right.
-    let clock = format!(
-        "{} / {}",
-        format_duration(app.now.position.round() as u32),
-        format_duration(app.now.duration.round() as u32)
-    );
-    let clock_w = (clock.chars().count() as u16).min(text_w);
-    let title_w = text_w.saturating_sub(clock_w + 1);
+    };
 
     let artist = track.artist.clone().unwrap_or_default();
     let mut title = String::new();
@@ -1184,43 +1134,53 @@ fn draw_now_playing(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(ACCENT),
             ),
             Span::styled(
-                truncate_chars(&title, usize::from(title_w).saturating_sub(2)),
+                // Three columns for the marker, so the ellipsis lands inside
+                // the section rather than being clipped by it.
+                truncate_chars(&title, usize::from(area.width).saturating_sub(3)),
                 title_style(),
             ),
         ])),
-        Rect {
-            x: text_x,
-            y: inner.y,
-            width: title_w,
-            height: 1,
-        },
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(clock, Style::default().fg(MUTED))))
-            .alignment(Alignment::Right),
-        Rect {
-            x: text_x + title_w,
-            y: inner.y,
-            width: clock_w,
-            height: 1,
-        },
+        row(0),
     );
 
-    // Line two: progress, then album, container and what plays next.
-    let bar_w = (text_w / 4).clamp(8, 26).min(text_w.saturating_sub(10));
+    // Timestamp, progress, timestamp: the whole remaining width is the bar.
+    let clock = |secs: f64| format_duration(secs.max(0.0).round() as u32);
+    let left = clock(app.now.position);
+    let right = clock(app.now.duration);
+    let left_w = left.chars().count() as u16;
+    let right_w = right.chars().count() as u16;
+    let bar_x = area.x + left_w + 1;
+    let bar_w = area.width.saturating_sub(left_w + right_w + 2);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(left, Style::default().fg(MUTED)))),
+        row(1),
+    );
     draw_thin_progress(
         frame,
         app,
         Rect {
-            x: text_x,
-            y: inner.y + 1,
+            x: bar_x,
+            y: area.y + 1,
             width: bar_w,
             height: 1,
         },
     );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(right, Style::default().fg(MUTED))))
+            .alignment(Alignment::Right),
+        Rect {
+            x: area.x + area.width - right_w,
+            width: right_w,
+            height: 1,
+            ..row(1)
+        },
+    );
 
+    // Album and container/bitrate: asked for early on, and it needs a home
+    // here now that the bar carries no shared status line.
     let mut meta = String::new();
-    if let Some(album) = track.album.as_deref().filter(|a| !a.is_empty()) {
+    if let Some(album) = track.album.as_deref().filter(|album| !album.is_empty()) {
         meta.push_str(album);
     }
     if let Some(format) = track.format_label() {
@@ -1229,78 +1189,128 @@ fn draw_now_playing(frame: &mut Frame, app: &App, area: Rect) {
         }
         meta.push_str(&format);
     }
-    if app.now.paused {
-        if !meta.is_empty() {
-            meta.push_str(" · ");
-        }
-        meta.push_str("paused");
-    }
-    let upcoming = app.queue.upcoming(1);
-    if !upcoming.is_empty() {
-        let titles = upcoming
-            .iter()
-            .map(|item| item.title.clone())
-            .collect::<Vec<_>>()
-            .join(" · ");
-        if !meta.is_empty() {
-            meta.push_str("   ");
-        }
-        meta.push_str("next  ");
-        meta.push_str(&titles);
-    }
-
-    if !meta.is_empty() && text_w > bar_w + 2 {
+    if area.height > 2 && !meta.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                truncate_chars(&meta, usize::from(text_w - bar_w - 2)),
+                truncate_chars(&meta, usize::from(area.width)),
                 Style::default().fg(MUTED),
             ))),
+            row(2),
+        );
+    }
+}
+
+/// Playback state, plus whatever the last action said, plus the keys.
+fn draw_bar_state(frame: &mut Frame, app: &App, area: Rect) {
+    let row = |offset: u16| Rect {
+        y: area.y + offset,
+        height: 1,
+        ..area
+    };
+
+    let fresh = app
+        .status
+        .as_ref()
+        .filter(|status| status.at.elapsed() < crate::app::STATUS_TTL);
+    match fresh {
+        Some(status) => frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncate_chars(&status.text, usize::from(area.width)),
+                if status.error {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(ACCENT)
+                },
+            ))),
+            row(0),
+        ),
+        None => frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "repeat {} · shuffle {}",
+                    app.queue.repeat().label(),
+                    if app.queue.is_shuffled() { "on" } else { "off" }
+                ),
+                Style::default().fg(MUTED),
+            ))),
+            row(0),
+        ),
+    }
+
+    let hints = key_hints(app.view);
+    if area.height > 1 && !hints.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                hints,
+                Style::default().fg(Color::DarkGray),
+            )))
+            .wrap(Wrap { trim: true }),
             Rect {
-                x: text_x + bar_w + 2,
-                y: inner.y + 1,
-                width: text_w - bar_w - 2,
-                height: 1,
+                y: area.y + 1,
+                height: area.height - 1,
+                ..area
             },
         );
     }
-
-    draw_hints(frame, inner, body_w, hint_w, hints);
 }
 
-/// Keys worth knowing on this screen, shown at the right of the bar.
-///
-/// The bar is always visible, so this is the only place the app advertises its
-/// own bindings; a key you cannot discover may as well not exist.
+fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "next",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        Rect {
+            y: area.y,
+            height: 1,
+            ..area
+        },
+    );
+
+    let upcoming = app
+        .queue
+        .upcoming(usize::from(area.height.saturating_sub(1)));
+    if upcoming.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "end of queue",
+                Style::default().fg(Color::DarkGray),
+            ))),
+            Rect {
+                y: area.y + 1,
+                height: 1,
+                ..area
+            },
+        );
+        return;
+    }
+    for (index, item) in upcoming.iter().enumerate() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncate_chars(&item.title, usize::from(area.width)),
+                Style::default().fg(MUTED),
+            ))),
+            Rect {
+                y: area.y + 1 + index as u16,
+                height: 1,
+                ..area
+            },
+        );
+    }
+}
+
+/// Keys worth knowing on this screen, shown under the playback state.
 fn key_hints(view: View) -> &'static str {
     match view {
-        View::Albums => "S sort · w grid · Enter play · ? help",
+        View::Albums => "S sort · w grid · Enter · * star · ? help",
         View::AlbumDetail => "Enter play · * star · h back",
-        View::Artists => "S sort · Enter open · 1-5 jump",
-        View::ArtistDetail => "Enter open · S sort · h back",
+        View::Artists => "S sort · Enter open · h back",
+        View::ArtistDetail => "Enter open · * star · h back",
         View::Favorites => "Enter open · * unstar · h back",
         View::ListenLater => "a remove · Enter open · h back",
         View::Queue => "Enter play · > skip · h back",
         View::Help => "",
     }
-}
-
-fn draw_hints(frame: &mut Frame, inner: Rect, body_w: u16, hint_w: u16, hints: &str) {
-    if hint_w == 0 || hints.is_empty() {
-        return;
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            hints,
-            Style::default().fg(Color::DarkGray),
-        )))
-        .alignment(Alignment::Right),
-        Rect {
-            x: inner.x + body_w,
-            y: inner.y + inner.height - 1,
-            width: hint_w,
-            height: 1,
-        },
-    );
 }
 
 /// A one-row progress bar: heavy rule for played, light rule for the rest.
@@ -1355,15 +1365,18 @@ mod tests {
     }
 
     #[test]
-    fn layout_reserves_a_status_bar_and_an_always_visible_bar() {
+    fn layout_gives_every_view_a_header_and_a_bar() {
         let area = Rect::new(0, 0, 80, 24);
         let shell = shell_layout(area);
 
-        assert_eq!(shell.status.height, 1);
-        // The bar is always there, even with nothing playing: it carries the
-        // key hints and an empty slot for the cover.
-        assert_eq!(shell.now_playing.height, NOW_PLAYING_HEIGHT);
-        assert_eq!(shell.content.height, 24 - 1 - NOW_PLAYING_HEIGHT);
+        // The bar is always there: it carries state, keys and the queue.
+        assert_eq!(shell.bar.height, BAR_HEIGHT);
+        assert_eq!(shell.bar.y, 24 - BAR_HEIGHT);
+
+        // Every view gets one row for its title and sort.
+        assert_eq!(shell.header.height, HEADER_HEIGHT);
+        assert_eq!(shell.body.y, shell.header.y + HEADER_HEIGHT);
+        assert!(shell.body.height > 0);
 
         // The rail sits to the left of the content, with a rule between them.
         let sidebar = shell.sidebar.expect("rail");
@@ -1371,24 +1384,8 @@ mod tests {
         assert_eq!(sidebar.x, area.x);
         let divider = shell.divider.expect("divider");
         assert_eq!(divider.x, sidebar.x + SIDEBAR_W);
-        assert_eq!(divider.height, shell.content.height);
-        assert_eq!(
-            shell.content.x,
-            divider.x + SIDEBAR_GAP,
-            "the view never touches the rail"
-        );
-    }
-
-    #[test]
-    fn the_now_playing_cover_reuses_the_list_thumbnail_shape() {
-        let inner = now_playing_inner(Rect::new(0, 19, 100, NOW_PLAYING_HEIGHT));
-        let cover = now_playing_cover_rect(inner);
-        // The bar's cover is its own size: two lines tall, so the progress
-        // rule and the queue preview still fit beside it.
-        assert_eq!(cover.width, BAR_COVER_CELLS);
-        assert_eq!(cover.height, BAR_COVER_ROWS);
-        assert_eq!(cover.x, 0);
-        assert_eq!(cover.y, 20);
+        assert_eq!(divider.height, shell.header.height + shell.body.height);
+        assert!(shell.body.x > divider.x, "the view never touches the rail");
     }
 
     // ---------------------------------------------------------------- art
@@ -1569,6 +1566,97 @@ mod tests {
         assert!(app.painter.plan(&app.placements).is_empty());
     }
 
+    fn playing_app() -> App {
+        let mut app = test_app(ArtProtocol::Off);
+        app.now.track = Some(crate::queue::QueueItem {
+            id: "s1".into(),
+            title: "Everything In Its Right Place".into(),
+            artist: Some("Radiohead".into()),
+            album: Some("Kid A".into()),
+            duration: Some(324),
+            suffix: Some("flac".into()),
+            bit_rate: Some(1044),
+            ..Default::default()
+        });
+        app.now.position = 73.0;
+        app.now.duration = 324.0;
+        app.now.loaded = true;
+        app.now.paused = false;
+        app.queue.replace(vec![
+            crate::queue::QueueItem {
+                id: "s2".into(),
+                title: "Kid A".into(),
+                ..Default::default()
+            },
+            crate::queue::QueueItem {
+                id: "s3".into(),
+                title: "The National Anthem".into(),
+                ..Default::default()
+            },
+        ]);
+        app
+    }
+
+    #[test]
+    fn the_bar_shows_the_track_progress_and_both_timestamps() {
+        let app = playing_app();
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("Radiohead — Everything"), "{text}");
+        assert!(text.contains("1:13"), "elapsed time: {text}");
+        assert!(text.contains("5:24"), "total time: {text}");
+        // Album and container: the bar is the only place they live.
+        assert!(text.contains("Kid A · FLAC 1044 kbps"), "{text}");
+    }
+
+    #[test]
+    fn the_bar_lists_what_plays_next() {
+        let app = playing_app();
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("next"), "{text}");
+        assert!(text.contains("The National Anthem"), "{text}");
+    }
+
+    #[test]
+    fn the_bar_shows_repeat_and_shuffle_state() {
+        let app = test_app(ArtProtocol::Off);
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("repeat off"), "{text}");
+        assert!(text.contains("shuffle off"), "{text}");
+    }
+
+    #[test]
+    fn the_header_carries_the_view_name_and_its_sort() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.view = View::Albums;
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("Albums · random"), "{text}");
+
+        app.view = View::Artists;
+        app.artist_sort = crate::app::ArtistSort::Name;
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("Artists · a-z"), "{text}");
+    }
+
+    #[test]
+    fn status_messages_take_over_the_state_line_and_expire() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.status("starred an album");
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("starred an album"), "{text}");
+        assert!(
+            !text.contains("repeat off"),
+            "the message replaces the state"
+        );
+
+        // Past the TTL the state comes back.
+        app.status = Some(crate::app::Status {
+            text: "starred an album".into(),
+            at: std::time::Instant::now() - crate::app::STATUS_TTL * 2,
+            error: false,
+        });
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("repeat off"), "{text}");
+    }
     #[test]
     fn the_rail_shows_its_jump_keys_and_a_rule() {
         let app = test_app(ArtProtocol::Off);
@@ -1576,10 +1664,10 @@ mod tests {
         assert!(text.contains("▸ Albums"), "{text}");
         // The key used to be clipped off the end of the rail; spacing matters.
         assert!(
-            text.contains("Albums    1"),
+            text.contains("Albums   1"),
             "the jump key is visible: {text}"
         );
-        assert!(text.contains("Starred   3"), "{text}");
+        assert!(text.contains("Starred  3"), "{text}");
         assert!(
             text.contains('│'),
             "a rule separates the rail from the view"

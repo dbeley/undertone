@@ -977,12 +977,16 @@ impl App {
     }
 
     /// `h` / Esc: return to wherever this view was opened from.
+    ///
+    /// Always clears: coming back re-renders a different list at different
+    /// offsets, and a plain diff leaves fragments of the previous screen —
+    /// long titles in particular — behind.
     pub fn go_back(&mut self) {
         let target = self.nav_stack.pop().unwrap_or(View::Albums);
         if target != self.view {
             self.view = target;
-            self.needs_clear = true;
         }
+        self.needs_clear = true;
         self.needs_redraw = true;
     }
 

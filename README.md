@@ -122,8 +122,10 @@ The album list pages as you scroll: a hundred albums at a time, fetched when
 the cursor gets within a screen of the end, and a short page means the end of
 the list. No count is ever held in memory beyond what you have scrolled past.
 
-The bottom bar shows the playing track with its cover, album, container and
-bitrate, a thin progress rule, and a preview of what plays next.
+The bottom bar is always there, in three columns: the playing track with its
+elapsed and total time either side of a progress rule, plus the album and
+container/bitrate; the play state and the keys that work on this screen; and
+what plays next. Sorting lives in each view's own header, next to its name.
 
 ## Development
 
