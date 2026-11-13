@@ -41,7 +41,29 @@ pub enum View {
     ListenLater,
     Playlists,
     PlaylistDetail,
+    Search,
     Help,
+}
+
+/// One row of a search: albums open, songs play.
+///
+/// A result list is capped at seventy rows, so the width of the largest
+/// variant costs tens of kilobytes at worst — not worth a `Box` at every use.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum SearchHit {
+    Album(Album),
+    Song(Song),
+}
+
+/// The search box and what it found.
+#[derive(Debug, Default)]
+pub struct SearchState {
+    pub query: String,
+    /// True while the query is being typed: keys type instead of acting.
+    pub typing: bool,
+    pub hits: Vec<SearchHit>,
+    pub selected: usize,
 }
 
 /// How the album list is laid out.
@@ -170,6 +192,7 @@ pub struct App {
     pub playlists: Vec<Playlist>,
     pub playlist_detail: Option<Playlist>,
     pub playlist_selected: usize,
+    pub search: SearchState,
     playlists_loaded: bool,
     pub artist_album_selected: usize,
     pub artist_album_scroll: usize,
@@ -246,6 +269,7 @@ impl App {
             playlists: Vec::new(),
             playlist_detail: None,
             playlist_selected: 0,
+            search: SearchState::default(),
             playlists_loaded: false,
             artist_album_selected: 0,
             artist_album_scroll: 0,
@@ -501,6 +525,39 @@ impl App {
     }
 
     // ---------------------------------------------------------------- artists
+
+    /// Run the query. Deliberately on Enter, not on every keystroke: the client
+    /// is synchronous and each request would freeze the interface mid-word.
+    pub fn run_search(&mut self) {
+        self.search.typing = false;
+        let query = self.search.query.trim().to_string();
+        if query.is_empty() {
+            self.status("type a query first");
+            return;
+        }
+
+        match self.client.search(&query) {
+            Ok(result) => {
+                self.search.hits = result
+                    .album
+                    .into_iter()
+                    .map(SearchHit::Album)
+                    .chain(result.song.into_iter().map(SearchHit::Song))
+                    .collect();
+                self.search.selected = 0;
+                if self.view != View::Search {
+                    self.set_view(View::Search);
+                }
+                let found = self.search.hits.len();
+                if found == 0 {
+                    self.status(format!("nothing found for “{query}”"));
+                } else {
+                    self.status(format!("{found} results for “{query}”"));
+                }
+            }
+            Err(err) => self.error(format!("search failed: {err}")),
+        }
+    }
 
     /// The server's playlists. Fetched once: the list changes only when someone
     /// edits it, and `R` re-reads it like every other list.
@@ -1178,6 +1235,22 @@ impl App {
             return;
         }
 
+        // While a query is being typed every key is text, not a command.
+        if self.search.typing {
+            match key.code {
+                KeyCode::Enter => self.run_search(),
+                KeyCode::Esc => self.search.typing = false,
+                KeyCode::Backspace => {
+                    self.search.query.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.search.query.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if self.view == View::Help {
             self.go_back();
             return;
@@ -1185,6 +1258,10 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') if key.modifiers.is_empty() => self.should_quit = true,
+            KeyCode::Char('/') => {
+                self.search.typing = true;
+                self.search.query.clear();
+            }
             KeyCode::Esc | KeyCode::Char('h') if self.view != View::Albums => {
                 self.go_back();
             }
@@ -1258,6 +1335,7 @@ impl App {
             View::Favorites => self.favorites.len(),
             View::Queue => self.queue.len(),
             View::ListenLater => self.listen_albums.len(),
+            View::Search => self.search.hits.len(),
             View::Playlists => self.playlists.len(),
             View::PlaylistDetail => self
                 .playlist_detail
@@ -1279,6 +1357,7 @@ impl App {
             View::ListenLater => self.listen_selected,
             View::Playlists => self.playlist_selected,
             View::PlaylistDetail => self.playlist_selected,
+            View::Search => self.search.selected,
             View::Help => 0,
         }
     }
@@ -1325,6 +1404,7 @@ impl App {
             }
             View::ListenLater => self.listen_selected = next,
             View::Playlists | View::PlaylistDetail => self.playlist_selected = next,
+            View::Search => self.search.selected = next,
             View::Help => {}
         }
     }
@@ -1349,6 +1429,7 @@ impl App {
             }
             View::ListenLater => self.listen_selected = next,
             View::Playlists | View::PlaylistDetail => self.playlist_selected = next,
+            View::Search => self.search.selected = next,
             View::Help => {}
         }
     }
@@ -1385,6 +1466,15 @@ impl App {
                 }
             }
             View::PlaylistDetail => self.play_playlist_track(self.playlist_selected),
+            View::Search => match self.search.hits.get(self.search.selected).cloned() {
+                Some(SearchHit::Album(album)) => self.open_album(album),
+                Some(SearchHit::Song(song)) => {
+                    self.queue.replace(vec![queue_item(&song)]);
+                    self.queue.jump_to(0);
+                    self.play_current();
+                }
+                None => {}
+            },
             View::ArtistDetail => {
                 let album = self
                     .artist_detail
@@ -2017,6 +2107,61 @@ mod tests {
         assert!(app.queue.is_empty());
         let status = app.status.as_ref().expect("a message");
         assert!(status.text.contains("empty"), "{}", status.text);
+    }
+
+    #[test]
+    fn typing_a_query_does_not_trigger_commands() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char('/')));
+
+        // Every one of these is a command on the album list.
+        for c in ['q', 'd', 'x', 'a', 's', 'r'] {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(app.search.query, "qdxasr");
+        assert!(!app.should_quit, "typing q must not quit");
+        assert!(app.queue.is_empty(), "typing never queues anything");
+    }
+
+    #[test]
+    fn backspace_edits_and_escape_leaves_the_box() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('b')));
+        app.handle_key(key(KeyCode::Backspace));
+
+        assert_eq!(app.search.query, "a");
+        assert!(app.search.typing);
+
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.search.typing, "escape closes the box");
+        assert_eq!(app.search.query, "a", "the query is kept for editing");
+    }
+
+    #[test]
+    fn a_song_result_plays_and_leaves_the_album_list_alone() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.search.hits = vec![SearchHit::Album(Album {
+            id: "al1".into(),
+            name: "Kid A".into(),
+            ..Default::default()
+        })];
+        app.search.hits.push(SearchHit::Song(Song {
+            id: "s1".into(),
+            title: "Everything In Its Right Place".into(),
+            duration: Some(240),
+            ..Default::default()
+        }));
+        app.view = View::Search;
+        app.search.selected = 1;
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert_eq!(app.queue.len(), 1);
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s1"));
     }
 
     // --------------------------------------------------------------- session

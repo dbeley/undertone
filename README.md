@@ -105,11 +105,18 @@ w          list / grid toggle  g / G   first / last
 Enter      open album · play track    p / Space  play / pause
 > / <      next / prev         f / b   seek ±10s
 s / r      shuffle / repeat    +/-     volume      m  mute
-5          playlists           ?       help        Esc back
+/          search              ?       help        Esc back
+5          playlists
 L          listen later        A       artists     F  starred
 a          save / unsave album *       star / unstar
 S / R      change sort / reload         q   quit
 ```
+
+`/` opens a search box in the header: type, Enter runs the query, Esc closes
+it. Results are one list — albums first, then songs — with each row saying which
+it is; Enter opens an album or plays the song. The query runs on Enter rather
+than on every keystroke, because the client is synchronous and a request per
+letter would freeze the interface mid-word.
 
 Playlists open like albums: `5` lists them with their size, Enter shows the
 tracks, Enter plays from that point with the rest of the playlist queued behind

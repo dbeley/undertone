@@ -336,7 +336,7 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                 app.listen_selected + visible,
             );
         }
-        View::Playlists | View::PlaylistDetail | View::Queue | View::Help => {}
+        View::Playlists | View::PlaylistDetail | View::Search | View::Queue | View::Help => {}
     }
 }
 
@@ -477,6 +477,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Queue => draw_queue(frame, app, shell.body),
         View::ListenLater => draw_listen_later(frame, app, shell.body),
         View::Playlists => draw_playlists(frame, app, shell.body),
+        View::Search => draw_search(frame, app, shell.body),
         View::PlaylistDetail => draw_playlist_detail(frame, app, shell.body),
         View::Help => draw_help(frame, shell.body),
     }
@@ -484,20 +485,59 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_bar(frame, app, shell.bar);
 }
 
+/// The search box, in the header row.
+fn draw_search_prompt(frame: &mut Frame, app: &App, area: Rect) {
+    let mut spans = vec![
+        Span::styled(
+            "Search  ",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(app.search.query.clone(), Style::default().fg(Color::White)),
+        Span::styled("▏", Style::default().fg(Color::White)),
+    ];
+    let used: usize = spans.iter().map(|span| span.width()).sum();
+    if used + 24 < usize::from(area.width) {
+        spans.push(Span::styled(
+            "   Enter to search · Esc to cancel",
+            Style::default().fg(MUTED),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 /// The view's name and sort, on its own row above the list.
 ///
 /// Sorting used to live in a status line shared with playback state, which made
 /// it impossible to find and made the list jump when that line appeared.
 fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
-    let (title, sort) = match app.view {
-        View::Albums => ("Albums", Some(app.sort.label())),
+    // The box takes the header over as soon as it opens, on whatever view you
+    // were looking at: otherwise you type into an interface that shows nothing.
+    if app.search.typing {
+        draw_search_prompt(frame, app, area);
+        return;
+    }
+
+    let (title, sort): (&str, Option<String>) = match app.view {
+        View::Albums => ("Albums", Some(app.sort.label().to_string())),
         View::AlbumDetail => ("Album", None),
-        View::Artists => ("Artists", Some(app.artist_sort.label())),
+        View::Artists => ("Artists", Some(app.artist_sort.label().to_string())),
         View::ArtistDetail => ("Artist", None),
         View::Favorites => ("Starred", None),
         View::ListenLater => ("Listen later", None),
         View::Playlists => ("Playlists", None),
         View::PlaylistDetail => ("Playlist", None),
+        View::Search => (
+            "Search",
+            Some(if app.search.typing {
+                format!("{}▏", app.search.query)
+            } else if app.search.query.is_empty() {
+                "press / to search".to_string()
+            } else {
+                app.search.query.clone()
+            }),
+        ),
         View::Queue => ("Queue", None),
         View::Help => ("Help", None),
     };
@@ -506,6 +546,7 @@ fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
         View::Artists => format!("{} / {}", app.artist_selected + 1, app.artists.len()),
         View::Favorites => format!("{}", app.favorites.len()),
         View::ListenLater => format!("{}", app.listen_albums.len()),
+        View::Search => format!("{} / {}", app.search.selected + 1, app.search.hits.len()),
         View::Playlists => format!("{}", app.playlists.len()),
         View::PlaylistDetail => app
             .playlist_detail
@@ -978,6 +1019,72 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Search results: albums first, then songs, each row saying which it is.
+fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
+    if app.search.hits.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                if app.search.typing {
+                    "type a query, Enter to search"
+                } else {
+                    "no results"
+                },
+                Style::default().fg(MUTED),
+            )),
+            area,
+        );
+        return;
+    }
+
+    let rows = usize::from(area.height);
+    let offset = app.search.selected.saturating_sub(rows.saturating_sub(1));
+    for slot in 0..rows {
+        let index = offset + slot;
+        let Some(hit) = app.search.hits.get(index) else {
+            break;
+        };
+        let selected = index == app.search.selected;
+        let (kind, name, detail) = match hit {
+            crate::app::SearchHit::Album(album) => (
+                "album",
+                album.name.clone(),
+                album.artist.clone().unwrap_or_default(),
+            ),
+            crate::app::SearchHit::Song(song) => (
+                "song",
+                song.title.clone(),
+                song.artist.clone().unwrap_or_default(),
+            ),
+        };
+        let tail_width = usize::from(area.width)
+            .saturating_sub(usize::from(area.width) / 2 + 9)
+            .max(8);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("{kind:<6}"), Style::default().fg(MUTED)),
+                Span::styled(
+                    truncate_chars(&name, usize::from(area.width).saturating_sub(20).max(8)),
+                    if selected {
+                        selected_style()
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Span::styled(
+                    format!("  {}", truncate_chars(&detail, tail_width)),
+                    Style::default().fg(MUTED),
+                ),
+            ])),
+            Rect {
+                x: area.x,
+                y: area.y + slot as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
 /// The playlist list: a name and how much is in it.
 fn draw_playlists(frame: &mut Frame, app: &App, area: Rect) {
     if app.playlists.is_empty() {
@@ -1440,6 +1547,7 @@ fn key_hints(view: View) -> &'static str {
         View::Favorites => "Enter open · * unstar · h back",
         View::ListenLater => "a remove · Enter open · h back",
         View::Playlists => "Enter open · h back",
+        View::Search => "/ edit · Enter open · h back",
         View::PlaylistDetail => "Enter play · h back",
         View::Queue => "Enter play · > skip · h back",
         View::Help => "",
@@ -1807,6 +1915,41 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_search_box_takes_over_the_header_while_typing() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.search.typing = true;
+        app.search.query = "radio".into();
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("Search  radio▏"), "{text}");
+        assert!(text.contains("Enter to search"), "{text}");
+        // The album header is not drawn underneath it.
+        assert!(!text.contains("Albums · random"), "{text}");
+    }
+
+    #[test]
+    fn search_results_say_which_kind_each_row_is() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.view = View::Search;
+        app.search.query = "kid".into();
+        app.search.hits = vec![
+            crate::app::SearchHit::Album(album_with_cover("al1")),
+            crate::app::SearchHit::Song(crate::subsonic::Song {
+                id: "s1".into(),
+                title: "Kid A".into(),
+                artist: Some("Radiohead".into()),
+                ..Default::default()
+            }),
+        ];
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("album"), "{text}");
+        assert!(text.contains("song"), "{text}");
+        assert!(text.contains("Radiohead"), "{text}");
+        assert!(text.contains("1 / 2"), "{text}");
     }
 
     #[test]
