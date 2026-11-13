@@ -14,7 +14,7 @@ use crate::listen_later::ListenLater;
 use crate::player::{
     EndReason, LoadMode, Player, PlayerEvent, ScrobbleAction, Scrobbler, Seek, TrackSource,
 };
-use crate::queue::{Queue, QueueItem, Step};
+use crate::queue::{Queue, QueueItem, Repeat, Step};
 use crate::render::{ArtProtocol, Painter, Placement};
 use crate::session::Session;
 use crate::subsonic::{
@@ -64,6 +64,38 @@ pub struct SearchState {
     pub typing: bool,
     pub hits: Vec<SearchHit>,
     pub selected: usize,
+}
+
+impl View {
+    /// A stable name, for saving which list was open.
+    pub fn key(self) -> &'static str {
+        match self {
+            View::Albums => "albums",
+            View::AlbumDetail => "album",
+            View::Artists => "artists",
+            View::ArtistDetail => "artist",
+            View::Favorites => "starred",
+            View::ListenLater => "later",
+            View::Playlists => "playlists",
+            View::PlaylistDetail => "playlist",
+            View::Search => "search",
+            View::Queue => "queue",
+            View::Help => "help",
+        }
+    }
+
+    /// Only the lists that need no request on start come back.
+    pub fn from_key(key: &str) -> Option<View> {
+        match key {
+            "albums" => Some(View::Albums),
+            "artists" => Some(View::Artists),
+            "starred" => Some(View::Favorites),
+            "later" => Some(View::ListenLater),
+            "playlists" => Some(View::Playlists),
+            "queue" => Some(View::Queue),
+            _ => None,
+        }
+    }
 }
 
 /// How the album list is laid out.
@@ -204,6 +236,8 @@ pub struct App {
     /// The track Auto DJ last tried to extend from, so one barren track is not
     /// retried on every transition.
     pub auto_dj_seed: Option<String>,
+    /// Where to jump once a restored track actually starts playing.
+    pub pending_seek: Option<f64>,
     pub selected: usize,
     pub scroll: usize,
     pub detail: Option<Album>,
@@ -277,6 +311,7 @@ impl App {
             favorite_selected: 0,
             favorite_scroll: 0,
             auto_dj_seed: None,
+            pending_seek: None,
             selected: 0,
             scroll: 0,
             detail: None,
@@ -806,6 +841,14 @@ impl App {
         self.now.playlist_base = base;
         self.now.playlist_len = window.len();
         self.adopt_current();
+
+        // A restored session resumes where it left off, once the stream is
+        // actually open.
+        if let Some(seconds) = self.pending_seek.take() {
+            if self.player.seek(Seek::Absolute, seconds).is_ok() {
+                self.now.position = seconds;
+            }
+        }
     }
 
     /// Take the queue's current track as what is playing, without touching the
@@ -906,6 +949,12 @@ impl App {
     /// queue the cursor indexes while the user is moving through it.
     pub fn auto_dj_top_up(&mut self) {
         if !self.settings.auto_dj {
+            return;
+        }
+        // Repeat means the queue does not run out by itself, so there is
+        // nothing to top up. Appending anyway would grow the queue without
+        // bound and interleave new tracks into an order the user chose.
+        if self.queue.repeat() != Repeat::Off {
             return;
         }
         let Some(seed) = self.now.track.as_ref().map(|track| track.id.clone()) else {
@@ -1579,9 +1628,21 @@ impl App {
         if let Some(item) = self.queue.current().cloned() {
             self.now.duration = f64::from(item.duration.unwrap_or(0));
             self.now.track = Some(item);
-            self.now.position = 0.0;
+            self.now.position = session.seconds.max(0.0);
             self.now.paused = true;
             self.now.loaded = false;
+            // Applied when playback actually starts: seeking a stream that is
+            // not open does nothing.
+            if session.seconds > 1.0 {
+                self.pending_seek = Some(session.seconds);
+            }
+        }
+        // Back to the list you were looking at, when getting there costs no
+        // request. Everything else opens on the library.
+        match session.view.as_deref().and_then(View::from_key) {
+            Some(View::Queue) => self.jump_to_view(View::Queue),
+            Some(View::ListenLater) => self.open_listen_later(),
+            _ => {}
         }
         self.status("restored last session — p to play");
         self.needs_redraw = true;
@@ -1593,6 +1654,14 @@ impl App {
             queue: self.queue.items().to_vec(),
             position: self.queue.position().unwrap_or(0),
             volume: Some(self.volume),
+            // Only a playing track has a position worth keeping; a restored,
+            // never-started one sits at zero by definition.
+            seconds: if self.now.loaded {
+                self.now.position
+            } else {
+                0.0
+            },
+            view: Some(self.view.key().to_string()),
         }
     }
 
@@ -2164,6 +2233,76 @@ mod tests {
         assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s1"));
     }
 
+    #[test]
+    fn auto_dj_stays_out_of_the_way_when_repeat_is_on() {
+        let mut app = app();
+        app.settings.auto_dj = true;
+        app.now.track = Some(track("seed"));
+        app.now.loaded = true;
+        app.queue.replace(vec![track("seed")]);
+        app.queue.set_repeat(Repeat::All);
+
+        app.auto_dj_top_up();
+
+        // Repeat means the queue never runs out; topping it up would grow it
+        // without bound and reorder what the user asked for.
+        assert_eq!(app.queue.len(), 1);
+        assert!(app.auto_dj_seed.is_none(), "and it must not even ask");
+    }
+
+    #[test]
+    fn a_restored_track_keeps_its_place_in_the_track() {
+        let mut app = app();
+        app.restore_session(&Session {
+            queue: vec![track("a"), track("b")],
+            position: 0,
+            volume: Some(40),
+            seconds: 95.0,
+            view: Some("queue".into()),
+        });
+
+        // Shown, not loaded: the clock reflects where it stopped.
+        assert_eq!(app.now.position, 95.0);
+        assert!(!app.now.loaded);
+        assert_eq!(app.pending_seek, Some(95.0));
+        // And the list comes back too.
+        assert_eq!(app.view, View::Queue);
+    }
+
+    #[test]
+    fn starting_a_restored_track_seeks_to_where_it_stopped() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.restore_session(&Session {
+            queue: vec![track("a")],
+            position: 0,
+            volume: None,
+            seconds: 95.0,
+            ..Default::default()
+        });
+
+        app.play_or_pause();
+
+        // The seek is handed over once; a later track change must not reuse it.
+        assert_eq!(app.pending_seek, None);
+        assert_eq!(app.now.position, 95.0);
+        assert!(app.now.loaded);
+    }
+
+    #[test]
+    fn a_view_that_needs_a_request_opens_on_the_library_instead() {
+        let mut app = app();
+        app.restore_session(&Session {
+            queue: vec![track("a")],
+            position: 0,
+            volume: None,
+            view: Some("album".into()),
+            ..Default::default()
+        });
+
+        assert_eq!(app.view, View::Albums, "an album detail is not restorable");
+    }
+
     // --------------------------------------------------------------- session
 
     fn session_of(ids: &[&str], position: usize) -> Session {
@@ -2171,6 +2310,7 @@ mod tests {
             queue: ids.iter().map(|id| track(id)).collect(),
             position,
             volume: Some(42),
+            ..Default::default()
         }
     }
 

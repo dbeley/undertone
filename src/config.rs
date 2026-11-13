@@ -124,6 +124,18 @@ fn default_cover_colors() -> u32 {
 fn default_cache_mb() -> u64 {
     20
 }
+/// Where thumbnails live.
+///
+/// Public because `--clear-cache` has to find it before credentials are
+/// resolved: wiping a cache should not require a working password.
+pub fn cache_dir(env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
+    let home = env("HOME").unwrap_or_else(|| "/".to_string());
+    match env("XDG_CACHE_HOME") {
+        Some(base) if !base.is_empty() => PathBuf::from(base).join("undertone"),
+        _ => PathBuf::from(&home).join(".cache").join("undertone"),
+    }
+}
+
 fn default_mpv() -> String {
     "mpv".to_string()
 }
@@ -208,11 +220,7 @@ impl Config {
                 .ok_or(ConfigError::MissingPassword)?,
         };
 
-        let home = env("HOME").unwrap_or_else(|| "/".to_string());
-        let cache_dir = match env("XDG_CACHE_HOME") {
-            Some(base) if !base.is_empty() => PathBuf::from(base).join("undertone"),
-            _ => PathBuf::from(&home).join(".cache").join("undertone"),
-        };
+        let cache_dir = cache_dir(&env);
 
         Ok(Settings {
             server,

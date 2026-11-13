@@ -37,11 +37,58 @@ fn main() {
     }
 }
 
+/// Delete everything under `dir`, returning how many bytes that was.
+///
+/// A missing directory is success: there is nothing to clear.
+fn clear_directory(dir: &std::path::Path) -> std::io::Result<u64> {
+    let mut freed = 0u64;
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(meta) = entry.metadata() {
+                    freed += if meta.is_dir() {
+                        clear_directory(&path)?
+                    } else {
+                        meta.len()
+                    };
+                }
+                if path.is_dir() {
+                    let _ = std::fs::remove_dir(&path);
+                } else {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    Ok(freed)
+}
+
+fn human_bytes(bytes: u64) -> String {
+    match bytes {
+        0 => "nothing".to_string(),
+        n if n < 1024 => format!("{n} B"),
+        n if n < 1024 * 1024 => format!("{:.1} KB", n as f64 / 1024.0),
+        n => format!("{:.1} MB", n as f64 / (1024.0 * 1024.0)),
+    }
+}
+
 fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     let env = |key: &str| std::env::var(key).ok();
     // Startup problems that degrade a feature instead of stopping the app are
     // collected here and shown in the status line once the UI exists.
     let mut startup_warnings: Vec<String> = Vec::new();
+
+    // Wiping the cache needs no credentials: it happens before the config is
+    // resolved, so a broken password cannot lock you out of your own cache.
+    if args.clear_cache {
+        let dir = undertone::config::cache_dir(&env).join("blobs");
+        let freed = clear_directory(&dir)?;
+        println!("cleared {} — {} freed", dir.display(), human_bytes(freed));
+        return Ok(());
+    }
 
     let config_path = args.config.as_deref().map(std::path::Path::new);
     let (config, loaded) = Config::load(config_path, &env)?;

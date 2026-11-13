@@ -25,6 +25,14 @@ pub struct Session {
     pub position: usize,
     #[serde(default)]
     pub volume: Option<u8>,
+    /// How far into the current track it was.
+    #[serde(default)]
+    pub seconds: f64,
+    /// Which list was open, as a stable key. Detail views are not stored: an
+    /// album detail needs the album, and reloading it on start would mean a
+    /// network round trip before the first frame.
+    #[serde(default)]
+    pub view: Option<String>,
 }
 
 impl Session {
@@ -87,6 +95,8 @@ mod tests {
             queue: vec![item("a"), item("b")],
             position: 1,
             volume: Some(65),
+            seconds: 63.5,
+            view: Some("queue".into()),
         };
         session.save(&path).unwrap();
 
@@ -122,6 +132,7 @@ mod tests {
             queue: vec![item("a")],
             position: 42,
             volume: None,
+            ..Default::default()
         };
         session.save(&path).unwrap();
         // Loading keeps the stored value; the app clamps when applying it.

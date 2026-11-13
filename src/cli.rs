@@ -33,4 +33,12 @@ pub struct Args {
     /// Enable debug logging to the state directory.
     #[arg(long)]
     pub debug: bool,
+
+    /// Delete the thumbnail cache and exit.
+    ///
+    /// Art is regenerated on demand, so this costs one slow first screen and
+    /// nothing else. Useful when a cache has gone bad or has grown on a full
+    /// SD card.
+    #[arg(long)]
+    pub clear_cache: bool,
 }
