@@ -20,10 +20,13 @@ use crate::subsonic::{
 };
 
 /// Cells a thumbnail occupies in the album list.
-pub const THUMB_CELLS: u16 = 4;
-pub const THUMB_ROWS: u16 = 2;
+///
+/// Six by three cells is 60x60 pixels at chafa's 10x20 cell grid: square, which
+/// is what a cover wants, and large enough to recognise on a small terminal.
+pub const THUMB_CELLS: u16 = 6;
+pub const THUMB_ROWS: u16 = 3;
 /// Rows of text per album entry.
-pub const ROW_HEIGHT: u16 = 2;
+pub const ROW_HEIGHT: u16 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -48,10 +51,10 @@ pub enum AlbumLayout {
 }
 
 /// Grid geometry, in terminal cells.
-pub const GRID_TILE_W: u16 = 12;
-pub const GRID_TILE_H: u16 = 5;
-pub const GRID_THUMB_W: u16 = 10;
-pub const GRID_THUMB_H: u16 = 4;
+pub const GRID_TILE_W: u16 = 14;
+pub const GRID_TILE_H: u16 = 7;
+pub const GRID_THUMB_W: u16 = 12;
+pub const GRID_THUMB_H: u16 = 5;
 
 pub struct NowPlaying {
     pub track: Option<QueueItem>,
@@ -76,6 +79,36 @@ impl Default for NowPlaying {
             loaded: false,
             listened: 0.0,
             scrobbler: Scrobbler::default(),
+        }
+    }
+}
+
+/// How the artist list is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtistSort {
+    /// Most albums first: in a library with no play data this is the best
+    /// available proxy for "who matters here".
+    #[default]
+    MostAlbums,
+    Name,
+    /// Ranked by where their albums appear in the server's frequent list.
+    MostPlayed,
+}
+
+impl ArtistSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MostAlbums => "most albums",
+            Self::Name => "a-z",
+            Self::MostPlayed => "most played",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::MostAlbums => Self::Name,
+            Self::Name => Self::MostPlayed,
+            Self::MostPlayed => Self::MostAlbums,
         }
     }
 }
@@ -116,6 +149,10 @@ pub struct App {
     pub artists: Vec<Artist>,
     pub artist_selected: usize,
     pub artist_scroll: usize,
+    pub artist_sort: ArtistSort,
+    /// Artist id -> position in the server's most-played album list. Built once,
+    /// on demand: it costs a request, so it only happens if you pick that sort.
+    pub artist_play_rank: std::collections::HashMap<String, usize>,
     /// The open artist's albums.
     pub artist_detail: Option<ArtistDetail>,
     pub artist_album_selected: usize,
@@ -187,6 +224,8 @@ impl App {
             artists: Vec::new(),
             artist_selected: 0,
             artist_scroll: 0,
+            artist_sort: ArtistSort::default(),
+            artist_play_rank: std::collections::HashMap::new(),
             artist_detail: None,
             artist_album_selected: 0,
             artist_album_scroll: 0,
@@ -293,13 +332,90 @@ impl App {
         }
     }
 
+    /// `S`: cycle the sort of whatever list you are looking at.
     pub fn cycle_sort(&mut self) {
-        let order = AlbumListType::ALL_IN_UI;
-        let index = order.iter().position(|k| *k == self.sort).unwrap_or(0);
-        self.sort = order[(index + 1) % order.len()];
-        let label = self.sort.as_str().to_string();
-        self.load_albums();
-        self.status(format!("sort: {label}"));
+        match self.view {
+            View::Albums | View::AlbumDetail => {
+                let order = AlbumListType::ALL_IN_UI;
+                let index = order
+                    .iter()
+                    .position(|kind| *kind == self.sort)
+                    .unwrap_or(0);
+                self.sort = order[(index + 1) % order.len()];
+                let label = self.sort.label();
+                self.load_albums();
+                self.status(format!("albums: {label}"));
+            }
+            View::Artists | View::ArtistDetail => {
+                self.artist_sort = self.artist_sort.next();
+                self.sort_artists();
+                let label = self.artist_sort.label();
+                self.status(format!("artists: {label}"));
+            }
+            _ => self.status("nothing to sort here"),
+        }
+    }
+
+    /// The label of the sort in force for the current view.
+    pub fn sort_label(&self) -> &'static str {
+        match self.view {
+            View::Artists | View::ArtistDetail => self.artist_sort.label(),
+            _ => self.sort.label(),
+        }
+    }
+
+    /// Order the artist list in place.
+    pub fn sort_artists(&mut self) {
+        if self.artist_sort == ArtistSort::MostPlayed && self.artist_play_rank.is_empty() {
+            self.load_artist_play_rank();
+        }
+        match self.artist_sort {
+            ArtistSort::MostAlbums => self.artists.sort_by(|a, b| {
+                b.album_count
+                    .unwrap_or(0)
+                    .cmp(&a.album_count.unwrap_or(0))
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            }),
+            ArtistSort::Name => self.artists.sort_by_key(|a| a.name.to_lowercase()),
+            ArtistSort::MostPlayed => {
+                let rank = &self.artist_play_rank;
+                self.artists.sort_by(|a, b| {
+                    rank.get(&a.id)
+                        .copied()
+                        .unwrap_or(usize::MAX)
+                        .cmp(&rank.get(&b.id).copied().unwrap_or(usize::MAX))
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+            }
+        }
+        self.artist_selected = self
+            .artist_selected
+            .min(self.artists.len().saturating_sub(1));
+        self.needs_redraw = true;
+    }
+
+    /// Rank artists by how early their albums appear in the frequent list.
+    fn load_artist_play_rank(&mut self) {
+        let query = AlbumListQuery {
+            kind: AlbumListType::Frequent,
+            size: 500,
+            offset: 0,
+            ..Default::default()
+        };
+        match self.client.album_list(&query) {
+            Ok(albums) => {
+                let mut rank: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                for album in albums {
+                    if let Some(artist_id) = album.artist_id {
+                        let next = rank.len();
+                        rank.entry(artist_id).or_insert(next);
+                    }
+                }
+                self.artist_play_rank = rank;
+            }
+            Err(err) => self.error(format!("could not rank artists: {err}")),
+        }
     }
 
     pub fn open_selected_album(&mut self) {
@@ -351,7 +467,7 @@ impl App {
 
     pub fn open_listen_later(&mut self) {
         self.refresh_listen_albums();
-        self.set_view(View::ListenLater);
+        self.jump_to_view(View::ListenLater);
         if self.listen_albums.is_empty() {
             self.status("listen later is empty — press a on an album to add it");
         }
@@ -385,7 +501,8 @@ impl App {
                 }
             }
         }
-        self.set_view(View::Artists);
+        self.jump_to_view(View::Artists);
+        self.sort_artists();
         if self.artists.is_empty() {
             self.status("no artists on this server");
         }
@@ -416,7 +533,7 @@ impl App {
                 self.favorite_selected = self
                     .favorite_selected
                     .min(self.favorites.len().saturating_sub(1));
-                self.set_view(View::Favorites);
+                self.jump_to_view(View::Favorites);
                 if self.favorites.is_empty() {
                     self.status("nothing starred yet — press * on an album");
                 }
@@ -848,6 +965,17 @@ impl App {
         }
     }
 
+    /// Move to a top-level view from the rail: the back stack resets, because
+    /// the rail is navigation, not a drill-down.
+    pub fn jump_to_view(&mut self, view: View) {
+        if self.view != view {
+            self.view = view;
+            self.needs_clear = true;
+            self.needs_redraw = true;
+        }
+        self.nav_stack.clear();
+    }
+
     /// `h` / Esc: return to wherever this view was opened from.
     pub fn go_back(&mut self) {
         let target = self.nav_stack.pop().unwrap_or(View::Albums);
@@ -915,6 +1043,12 @@ impl App {
             KeyCode::Char('L') => self.open_listen_later(),
             KeyCode::Char('A') => self.open_artists(),
             KeyCode::Char('F') => self.open_favorites(),
+            // The rail, with explicit jumps.
+            KeyCode::Char('1') => self.jump_to_view(View::Albums),
+            KeyCode::Char('2') => self.open_artists(),
+            KeyCode::Char('3') => self.open_favorites(),
+            KeyCode::Char('4') => self.open_listen_later(),
+            KeyCode::Char('5') => self.jump_to_view(View::Queue),
             KeyCode::Char('*') => self.toggle_star(),
             KeyCode::Char('h') if self.view == View::Albums => self.move_horizontal(-1),
             KeyCode::Char('l') if self.view == View::Albums => self.move_horizontal(1),
@@ -1398,17 +1532,17 @@ mod tests {
     fn ctrl_d_and_ctrl_u_page_by_a_screenful() {
         let mut app = app();
         app.albums = (0..60).map(|i| album(&i.to_string(), 1)).collect();
-        // 20 rows at ROW_HEIGHT 2 is ten albums per page.
+        // 20 rows at ROW_HEIGHT 3 is six albums per page.
         app.list_area = (100, 20);
 
         app.handle_key(ctrl(KeyCode::Char('d')));
-        assert_eq!(app.selected, 10);
+        assert_eq!(app.selected, 6);
 
         app.handle_key(ctrl(KeyCode::Char('d')));
-        assert_eq!(app.selected, 20);
+        assert_eq!(app.selected, 12);
 
         app.handle_key(ctrl(KeyCode::Char('u')));
-        assert_eq!(app.selected, 10);
+        assert_eq!(app.selected, 6);
 
         // Clamped at the top rather than underflowing.
         app.handle_key(ctrl(KeyCode::Char('u')));
@@ -1421,11 +1555,11 @@ mod tests {
         let mut app = app();
         app.albums = (0..60).map(|i| album(&i.to_string(), 1)).collect();
         app.layout = AlbumLayout::Grid;
-        // 96 wide is eight 12-cell tiles; 25 rows is five 5-row tile rows.
+        // 96 wide fits six 14-cell tiles; 25 rows fits three 7-row tile rows.
         app.list_area = (96, 25);
 
         app.handle_key(ctrl(KeyCode::Char('d')));
-        assert_eq!(app.selected, 40, "one page is five rows of eight");
+        assert_eq!(app.selected, 18, "one page is three rows of six");
     }
 
     #[test]
@@ -1674,6 +1808,119 @@ mod tests {
         let status = app.status.as_ref().expect("a message");
         assert!(status.text.contains("no album"), "{}", status.text);
         assert!(!status.error, "an empty cursor is not an error");
+    }
+
+    // ------------------------------------------------------------------ sorts
+
+    #[test]
+    fn artists_sort_by_album_count_then_name() {
+        let mut app = app();
+        app.artists = vec![
+            Artist {
+                id: "1".into(),
+                name: "beta".into(),
+                album_count: Some(1),
+                ..Default::default()
+            },
+            Artist {
+                id: "2".into(),
+                name: "Alpha".into(),
+                album_count: Some(5),
+                ..Default::default()
+            },
+            Artist {
+                id: "3".into(),
+                name: "alpha".into(),
+                album_count: Some(5),
+                ..Default::default()
+            },
+        ];
+        app.artist_sort = ArtistSort::MostAlbums;
+        app.sort_artists();
+
+        let names: Vec<&str> = app.artists.iter().map(|a| a.name.as_str()).collect();
+        // Equal counts fall back to a case-insensitive name comparison.
+        assert_eq!(names, vec!["Alpha", "alpha", "beta"]);
+    }
+
+    #[test]
+    fn artists_sort_by_name_case_insensitively() {
+        let mut app = app();
+        app.artists = vec![
+            Artist {
+                id: "1".into(),
+                name: "zed".into(),
+                ..Default::default()
+            },
+            Artist {
+                id: "2".into(),
+                name: "Alpha".into(),
+                ..Default::default()
+            },
+        ];
+        app.artist_sort = ArtistSort::Name;
+        app.sort_artists();
+        let names: Vec<&str> = app.artists.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "zed"]);
+    }
+
+    #[test]
+    fn most_played_uses_the_frequent_ranking_and_puts_unknown_artists_last() {
+        let mut app = app();
+        app.artists = vec![
+            Artist {
+                id: "unranked".into(),
+                name: "aaa".into(),
+                ..Default::default()
+            },
+            Artist {
+                id: "second".into(),
+                name: "zzz".into(),
+                ..Default::default()
+            },
+            Artist {
+                id: "first".into(),
+                name: "mmm".into(),
+                ..Default::default()
+            },
+        ];
+        // Pre-filled rank map: choosing this sort must not need a request.
+        app.artist_play_rank.insert("first".into(), 0);
+        app.artist_play_rank.insert("second".into(), 1);
+        app.artist_sort = ArtistSort::MostPlayed;
+        app.sort_artists();
+
+        let ids: Vec<&str> = app.artists.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["first", "second", "unranked"]);
+        assert!(app.status.is_none(), "a filled rank map needs no fetch");
+    }
+
+    #[test]
+    fn s_cycles_the_artist_sort_without_touching_the_albums_sort() {
+        let mut app = app();
+        app.artists = vec![artist("1", "A"), artist("2", "B")];
+        app.view = View::Artists;
+        let album_sort = app.sort;
+
+        app.handle_key(key(KeyCode::Char('S')));
+        assert_eq!(app.artist_sort, ArtistSort::Name, "most albums -> a-z");
+        assert_eq!(app.sort, album_sort, "the album sort is untouched");
+
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("artists: a-z"), "{}", status.text);
+    }
+
+    #[test]
+    fn the_rail_keys_jump_without_depending_on_the_back_stack() {
+        let mut app = app();
+        app.albums = vec![album("a", 1)];
+        // Drill in, then use the rail: back must not return to the detail.
+        app.set_view(View::AlbumDetail);
+        app.handle_key(key(KeyCode::Char('4')));
+        assert_eq!(app.view, View::ListenLater);
+        assert!(app.nav_stack.is_empty(), "a rail jump resets the stack");
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.view, View::Albums);
     }
     #[test]
     fn q_quits_and_escape_goes_back() {

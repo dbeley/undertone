@@ -43,24 +43,118 @@ fn selected_style() -> Style {
 /// the cover — track and clock, then progress plus album/format/next.
 pub const NOW_PLAYING_HEIGHT: u16 = 3;
 
-/// Split the screen into [main, status, now-playing].
-fn shell_layout(area: Rect, has_track: bool) -> (Rect, Rect, Option<Rect>) {
+/// Width of the navigation rail, and the narrowest window that keeps it.
+pub const SIDEBAR_W: u16 = 14;
+pub const SIDEBAR_MIN_WIDTH: u16 = 60;
+
+/// Where each part of the screen lives.
+struct Shell {
+    /// The navigation rail, absent on narrow terminals.
+    sidebar: Option<Rect>,
+    /// The view itself.
+    content: Rect,
+    status: Rect,
+    now_playing: Option<Rect>,
+}
+
+/// Split the screen into [sidebar, content], status, and now-playing.
+fn shell_layout(area: Rect, has_track: bool) -> Shell {
     let bars = if has_track { 1 + NOW_PLAYING_HEIGHT } else { 1 };
-    let chunks = Layout::default()
+    let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(bars)])
         .split(area);
-    if has_track {
+
+    let (status, now_playing) = if has_track {
         let bottom = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
                 Constraint::Length(NOW_PLAYING_HEIGHT),
             ])
-            .split(chunks[1]);
-        (chunks[0], bottom[0], Some(bottom[1]))
+            .split(rows[1]);
+        (bottom[0], Some(bottom[1]))
     } else {
-        (chunks[0], chunks[1], None)
+        (rows[1], None)
+    };
+
+    // On a small terminal a rail would eat a third of the width; the status
+    // line still says which sort is in use, so the view stays usable.
+    if area.width < SIDEBAR_MIN_WIDTH {
+        return Shell {
+            sidebar: None,
+            content: rows[0],
+            status,
+            now_playing,
+        };
+    }
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(SIDEBAR_W), Constraint::Min(20)])
+        .split(rows[0]);
+    Shell {
+        sidebar: Some(columns[0]),
+        content: columns[1],
+        status,
+        now_playing,
+    }
+}
+
+/// The views reachable from the rail, with their jump keys.
+const NAV_ITEMS: [(View, &str, char); 5] = [
+    (View::Albums, "Albums", '1'),
+    (View::Artists, "Artists", '2'),
+    (View::Favorites, "Favourites", '3'),
+    (View::ListenLater, "Later", '4'),
+    (View::Queue, "Queue", '5'),
+];
+
+/// Which rail entry a view belongs to: an album detail is still "Albums".
+fn nav_owner(view: View) -> View {
+    match view {
+        View::AlbumDetail => View::Albums,
+        View::ArtistDetail => View::Artists,
+        other => other,
+    }
+}
+
+fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+    let current = nav_owner(app.view);
+    for (index, (view, label, key)) in NAV_ITEMS.iter().enumerate() {
+        let y = area.y + index as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        let active = *view == current;
+        let row = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        let line = Line::from(vec![
+            Span::styled(
+                if active { "▸ " } else { "  " },
+                Style::default().fg(ACCENT),
+            ),
+            Span::styled(
+                format!("{label:<11}"),
+                if active {
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(MUTED)
+                },
+            ),
+            Span::styled(
+                key.to_string(),
+                if active {
+                    Style::default().fg(ACCENT)
+                } else {
+                    Style::default().fg(MUTED)
+                },
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), row);
     }
 }
 
@@ -83,17 +177,19 @@ fn now_playing_inner(area: Rect) -> Rect {
     Block::default().borders(Borders::TOP).inner(area)
 }
 
+/// Cells the bar's cover occupies. Deliberately smaller than a list
+/// thumbnail: the bar is two lines tall, and a three-row cover would push the
+/// progress line off it.
+const BAR_COVER_CELLS: u16 = 4;
+const BAR_COVER_ROWS: u16 = 2;
+
 /// Where the cover sits inside the bar.
-///
-/// List-thumbnail sized on purpose: the same shape as a list cover means the
-/// rendered blob is already in the cache, so the bar costs no extra encoding.
 fn now_playing_cover_rect(inner: Rect) -> Rect {
     Rect {
         x: inner.x,
         y: inner.y,
-        width: THUMB_CELLS.min(inner.width / 2),
-        // The bar is exactly two rows tall, which is the thumbnail height.
-        height: THUMB_ROWS.min(inner.height),
+        width: BAR_COVER_CELLS.min(inner.width / 2),
+        height: BAR_COVER_ROWS.min(inner.height),
     }
 }
 
@@ -115,7 +211,9 @@ pub fn collect_placements(app: &mut App, area: Rect) {
         return;
     }
 
-    let (main, _, now) = shell_layout(area, app.now.track.is_some());
+    let shell = shell_layout(area, app.now.track.is_some());
+    let main = shell.content;
+    let now = shell.now_playing;
     app.list_area = (main.width, main.height);
 
     match app.view {
@@ -383,7 +481,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         );
         return;
     }
-    let (main, status, now) = shell_layout(area, app.now.track.is_some());
+    let shell = shell_layout(area, app.now.track.is_some());
+    let main = shell.content;
+    if let Some(sidebar) = shell.sidebar {
+        draw_sidebar(frame, app, sidebar);
+    }
 
     match app.view {
         View::Albums => draw_albums(frame, app, main),
@@ -396,8 +498,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Help => draw_help(frame, main),
     }
 
-    draw_status_bar(frame, app, status);
-    if let Some(now_area) = now {
+    draw_status_bar(frame, app, shell.status);
+    if let Some(now_area) = shell.now_playing {
         draw_now_playing(frame, app, now_area);
     }
 }
@@ -473,6 +575,7 @@ fn draw_album_rows(
             .map(|year| format!(" · {year}"))
             .unwrap_or_default();
         let artist = album.artist.clone().unwrap_or_default();
+        let tracks = album.song_count.map(|count| format!("{count} tracks"));
         draw_row(
             frame,
             app,
@@ -481,13 +584,14 @@ fn draw_album_rows(
             album.cover_art.as_deref(),
             &album.name,
             &format!("{artist}{year}"),
+            tracks.as_deref(),
             index == selected,
             album.starred.is_some(),
         );
     }
 }
 
-/// One two-line list row: thumbnail, title, subtitle.
+/// One list row: thumbnail, title, subtitle, and an optional third line.
 ///
 /// Shared by every list view: albums, artists, favourites. Keeping one
 /// implementation is what stops the placeholder, the selection marker and the
@@ -501,6 +605,7 @@ fn draw_row(
     cover: Option<&str>,
     title: &str,
     subtitle: &str,
+    detail: Option<&str>,
     selected: bool,
     starred: bool,
 ) {
@@ -514,7 +619,7 @@ fn draw_row(
         height: ROW_HEIGHT,
     };
     let prefix = if starred { "★ " } else { "" };
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             format!("{prefix}{title}"),
             if selected {
@@ -528,6 +633,12 @@ fn draw_row(
             Style::default().fg(MUTED),
         )),
     ];
+    if let Some(detail) = detail {
+        lines.push(Line::from(Span::styled(
+            detail.to_string(),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
     frame.render_widget(Paragraph::new(lines), text_area);
 
     if selected && !has_art {
@@ -595,6 +706,7 @@ fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {
             artist.cover_art.as_deref(),
             &artist.name,
             &subtitle,
+            None,
             index == app.artist_selected,
             artist.starred.is_some(),
         );
@@ -636,6 +748,7 @@ fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
             .year
             .map(|year| format!(" · {year}"))
             .unwrap_or_default();
+        let tracks = album.song_count.map(|count| format!("{count} tracks"));
         draw_row(
             frame,
             app,
@@ -644,6 +757,7 @@ fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
             album.cover_art.as_deref(),
             &album.name,
             &format!("{}{year}", album.artist.clone().unwrap_or_default()),
+            tracks.as_deref(),
             index == app.artist_album_selected,
             album.starred.is_some(),
         );
@@ -915,7 +1029,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         _ => (
             format!(
                 "{} · art {} · shuffle {} · repeat {} · vol {}{}{}",
-                app.sort.as_str(),
+                app.sort_label(),
                 app.protocol.label(),
                 if app.queue.is_shuffled() { "on" } else { "off" },
                 app.queue.repeat().label(),
@@ -1129,24 +1243,45 @@ mod tests {
     #[test]
     fn layout_reserves_a_status_bar_and_optional_now_playing() {
         let area = Rect::new(0, 0, 80, 24);
-        let (main, status, now) = shell_layout(area, false);
-        assert_eq!(main.height, 23);
-        assert_eq!(status.height, 1);
-        assert!(now.is_none());
+        let shell = shell_layout(area, false);
+        assert_eq!(shell.content.height, 23);
+        assert_eq!(shell.status.height, 1);
+        assert!(shell.now_playing.is_none());
+        assert!(shell.sidebar.is_some(), "80 columns keeps the rail");
 
-        let (main, status, now) = shell_layout(area, true);
-        assert_eq!(status.height, 1);
-        assert_eq!(now.map(|r| r.height), Some(NOW_PLAYING_HEIGHT));
-        // Main keeps everything the bars do not need.
-        assert_eq!(main.height, 24 - 1 - NOW_PLAYING_HEIGHT);
+        let shell = shell_layout(area, true);
+        assert_eq!(shell.status.height, 1);
+        assert_eq!(
+            shell.now_playing.map(|r| r.height),
+            Some(NOW_PLAYING_HEIGHT)
+        );
+        // Content keeps everything the bars do not need.
+        assert_eq!(shell.content.height, 24 - 1 - NOW_PLAYING_HEIGHT);
+        // The rail sits to the left of the content, not above it.
+        let sidebar = shell.sidebar.expect("rail");
+        assert_eq!(sidebar.width, SIDEBAR_W);
+        assert_eq!(sidebar.x, area.x);
+        assert_eq!(shell.content.x, area.x + SIDEBAR_W);
+    }
+
+    #[test]
+    fn the_rail_disappears_when_the_terminal_is_narrow() {
+        let shell = shell_layout(Rect::new(0, 0, 40, 20), false);
+        assert!(
+            shell.sidebar.is_none(),
+            "a rail would eat a third of the width"
+        );
+        assert_eq!(shell.content.width, 40);
     }
 
     #[test]
     fn the_now_playing_cover_reuses_the_list_thumbnail_shape() {
         let inner = now_playing_inner(Rect::new(0, 19, 100, NOW_PLAYING_HEIGHT));
         let cover = now_playing_cover_rect(inner);
-        assert_eq!(cover.width, THUMB_CELLS);
-        assert_eq!(cover.height, THUMB_ROWS);
+        // The bar's cover is its own size: two lines tall, so the progress
+        // rule and the queue preview still fit beside it.
+        assert_eq!(cover.width, BAR_COVER_CELLS);
+        assert_eq!(cover.height, BAR_COVER_ROWS);
         assert_eq!(cover.x, 0);
         assert_eq!(cover.y, 20);
     }
@@ -1253,7 +1388,7 @@ mod tests {
     fn switching_views_erases_previously_painted_art() {
         let mut app = test_app(ArtProtocol::Sixel);
         app.albums = vec![album_with_cover("a"), album_with_cover("b")];
-        warm_art(&mut app, 4, 2);
+        warm_art(&mut app, u32::from(THUMB_CELLS), u32::from(THUMB_ROWS));
         let area = Rect::new(0, 0, 100, 30);
 
         collect_placements(&mut app, area);
@@ -1274,7 +1409,7 @@ mod tests {
     fn going_back_to_albums_repaints_the_thumbnails() {
         let mut app = test_app(ArtProtocol::Sixel);
         app.albums = vec![album_with_cover("a")];
-        warm_art(&mut app, 4, 2);
+        warm_art(&mut app, u32::from(THUMB_CELLS), u32::from(THUMB_ROWS));
         let area = Rect::new(0, 0, 100, 30);
 
         collect_placements(&mut app, area);
@@ -1323,6 +1458,35 @@ mod tests {
         assert!(app.painter.plan(&app.placements).is_empty());
     }
 
+    #[test]
+    fn the_rail_marks_the_current_page() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.view = View::Albums;
+        let text = rendered_text(&app, 80, 24);
+        assert!(text.contains("Albums"), "{text}");
+        assert!(
+            text.contains("▸ Albums"),
+            "the current page is marked: {text}"
+        );
+        assert!(
+            !text.contains("▸ Artists"),
+            "only one entry is marked: {text}"
+        );
+
+        app.view = View::Artists;
+        let text = rendered_text(&app, 80, 24);
+        assert!(text.contains("▸ Artists"), "{text}");
+    }
+
+    #[test]
+    fn an_album_detail_still_shows_albums_as_the_current_page() {
+        // Being inside an album should not make the rail look like nowhere.
+        let mut app = test_app(ArtProtocol::Off);
+        app.detail = Some(album_with_cover("x"));
+        app.view = View::AlbumDetail;
+        let text = rendered_text(&app, 80, 24);
+        assert!(text.contains("▸ Albums"), "{text}");
+    }
     #[test]
     fn the_artists_view_lists_names_and_album_counts() {
         let mut app = test_app(ArtProtocol::Off);

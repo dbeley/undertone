@@ -129,3 +129,59 @@ fn skipping_tracks_walks_the_queue() {
     assert_ne!(first, second, "next should move to another track");
     println!("{first:?} -> {second:?}");
 }
+
+#[test]
+#[ignore]
+fn artists_can_be_sorted_three_ways_against_a_real_server() {
+    use undertone::app::ArtistSort;
+
+    let mut app = app();
+    app.open_artists();
+    assert!(!app.artists.is_empty(), "the demo server has artists");
+
+    // Default: most albums first.
+    let counts: Vec<u32> = app
+        .artists
+        .iter()
+        .map(|artist| artist.album_count.unwrap_or(0))
+        .collect();
+    assert!(
+        counts.windows(2).all(|pair| pair[0] >= pair[1]),
+        "most-albums order is descending: {counts:?}"
+    );
+
+    // A-Z.
+    app.artist_sort = ArtistSort::Name;
+    app.sort_artists();
+    let names: Vec<String> = app.artists.iter().map(|a| a.name.to_lowercase()).collect();
+    assert!(
+        names.windows(2).all(|pair| pair[0] <= pair[1]),
+        "name order is ascending"
+    );
+
+    // Most played: fills the rank map from the frequent album list, and the
+    // order actually changes.
+    let before: Vec<String> = app.artists.iter().map(|a| a.id.clone()).collect();
+    app.artist_sort = ArtistSort::MostPlayed;
+    app.sort_artists();
+    assert!(
+        !app.artist_play_rank.is_empty(),
+        "the frequent list should have ranked some artists"
+    );
+    let after: Vec<String> = app.artists.iter().map(|a| a.id.clone()).collect();
+    assert_ne!(after, before, "most-played ordering differs from a-z");
+
+    // Ranked artists come before unranked ones.
+    let mut seen_unranked = false;
+    for artist in &app.artists {
+        let ranked = app.artist_play_rank.contains_key(&artist.id);
+        if !ranked {
+            seen_unranked = true;
+        } else {
+            assert!(
+                !seen_unranked,
+                "a ranked artist appeared after an unranked one"
+            );
+        }
+    }
+}

@@ -33,15 +33,33 @@ impl AlbumListType {
         }
     }
 
-    /// Modes valid for Undertone's album list, in cycling order.
-    pub const ALL_IN_UI: [Self; 6] = [
+    /// Modes offered in the UI, in cycling order.
+    ///
+    /// Exactly what the list is likely to be wanted for: discovery, what is
+    /// new, what gets played, and finding a name. Starred and by-year remain
+    /// available in the endpoint but are no longer in the cycle — favourites
+    /// have their own screen, and by-year is a filter more than a sort.
+    pub const ALL_IN_UI: [Self; 4] = [
         Self::Random,
         Self::Newest,
-        Self::AlphabeticalByArtist,
         Self::Frequent,
-        Self::Starred,
-        Self::ByYear,
+        Self::AlphabeticalByName,
     ];
+
+    /// Human label for the status line.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Random => "random",
+            Self::Newest => "recent",
+            Self::Frequent => "most played",
+            Self::AlphabeticalByName => "a-z",
+            Self::AlphabeticalByArtist => "artist a-z",
+            Self::Recent => "recently played",
+            Self::Starred => "starred",
+            Self::ByYear => "year",
+            Self::ByGenre => "genre",
+        }
+    }
 }
 
 /// Parameters for one page of `getAlbumList2`.

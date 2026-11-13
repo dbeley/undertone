@@ -95,6 +95,7 @@ track change instead of making the interface stutter.
 ## Keys
 
 ```
+1-5        rail: albums · artists · favourites · later · queue
 j / k      move down / up      Ctrl-d/u  page down / up
 h / l      left / right (grid) · h back
 w          list / grid toggle  g / G   first / last
@@ -106,6 +107,12 @@ L          listen later        A       artists     F  favourites
 a          save / unsave album *       star / unstar
 S / R      change sort / reload         q   quit
 ```
+
+`S` cycles the sort of the list you are looking at: albums run
+random → recent → most played → a-z, artists run most albums → a-z → most
+played. Artist "most played" is a ranking built from the server's frequent
+album list, since the Subsonic artist index carries no play counts; artists
+with no frequent albums come last, alphabetically.
 
 `h` and `Esc` go back to the screen you came from, not always to the library:
 an album opened from an artist page returns to that artist, and an album opened
