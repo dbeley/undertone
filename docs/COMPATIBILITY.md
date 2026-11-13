@@ -65,6 +65,14 @@ queue list stay.
 What the interface looks like is in `docs/SCREENS.md`, rendered from the real
 binary by `scripts/screens.py`.
 
+## Build targets
+
+CI builds the binary for aarch64 as well as x86_64
+(`packages.x86_64-linux.cross-aarch64`, cross-compiled — build scripts run
+natively, so no emulation), and asserts the result really is an ARM ELF. That
+proves it compiles for the target; it proves nothing about how it behaves there,
+which is what the manual rows below are for.
+
 ## Not covered here
 
 - **A real framebuffer console.** No pty row can stand in for `fbcon`; the

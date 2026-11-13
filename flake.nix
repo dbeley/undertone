@@ -51,7 +51,7 @@
           # mpv and chafa are runtime dependencies, not build inputs: the
           # binary execs them. Wrapping puts both on PATH so a fresh NixOS
           # install works without the user installing anything by hand.
-          postInstall = ''
+          postInstall = pkgs.lib.optionalString wrapper ''
             wrapProgram $out/bin/undertone \
               --prefix PATH : ${
                 pkgs.lib.makeBinPath [

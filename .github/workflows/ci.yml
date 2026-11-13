@@ -42,3 +42,23 @@ jobs:
             echo "::error::binary is $size bytes, exceeding the 12 MB budget"
             exit 1
           fi
+
+  arm:
+    # Every target this app is for is ARM and the `check` job only builds
+    # x86_64. This cross-builds the binary for aarch64 (build scripts run
+    # natively, so no emulation) in its own job, so it costs wall-clock time in
+    # parallel rather than in series.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: cross-compile for aarch64
+        run: nix build .#packages.x86_64-linux.cross-aarch64 --print-build-logs
+      - name: it really is an ARM binary
+        # e_machine at offset 18 of an ELF header: 0xb7 is AArch64.
+        run: |
+          od -An -tx1 -j18 -N2 result/bin/undertone
+          od -An -tx1 -j18 -N2 result/bin/undertone | grep -q "b7 00"
