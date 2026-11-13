@@ -35,6 +35,26 @@ KITTY = re.compile(rb"\x1b_G")
 PLACEHOLDER = "▚"
 
 
+def split_complete(text):
+    """Split into a part that can be parsed and a trailing incomplete escape."""
+    start = text.rfind("\x1b")
+    if start == -1:
+        return text, ""
+    tail = text[start:]
+    if len(tail) == 1:
+        return text[:start], tail
+    kind = tail[1]
+    if kind == "[":
+        if re.match(r"\x1b\[[0-9;?]*[A-Za-z]", tail):
+            return text, ""
+        return text[:start], tail
+    if kind == "]":
+        if re.search(r"\x07|\x1b\\", tail):
+            return text, ""
+        return text[:start], tail
+    return text, ""
+
+
 class Screen:
     """Just enough of a terminal to know what is on it."""
 
@@ -42,23 +62,30 @@ class Screen:
         self.cols, self.rows = cols, rows
         self.grid = [[" "] * cols for _ in range(rows)]
         self.x = self.y = 0
+        self.pending = b""
 
     def feed(self, data):
-        text = data.decode("utf-8", "replace")
+        # An escape sequence can be split across two reads; hold the incomplete
+        # tail until the rest arrives, or its parameters land in the cells.
+        self.pending += data
+        text = self.pending.decode("utf-8", "ignore")
+        complete, tail = split_complete(text)
+        self.pending = tail.encode()
+
         i = 0
-        while i < len(text):
-            ch = text[i]
+        while i < len(complete):
+            ch = complete[i]
             if ch == "\x1b":
-                m = re.match(r"\x1b\[([0-9;?]*)([A-Za-z])", text[i:])
+                m = re.match(r"\x1b\[([0-9;?]*)([A-Za-z])", complete[i:])
                 if m:
                     self._csi(m.group(1), m.group(2))
                     i += m.end()
                     continue
-                m = re.match(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", text[i:])
+                m = re.match(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", complete[i:])
                 if m:
                     i += m.end()
                     continue
-                m = re.match(r"\x1b.", text[i:])
+                m = re.match(r"\x1b.", complete[i:])
                 i += m.end() if m else 1
                 continue
             if ch == "\r":

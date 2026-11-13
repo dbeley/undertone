@@ -63,7 +63,9 @@ queue list stay.
 | a track fails mid-playlist | message, playback moves on | `tests/errors.rs`, `src/app.rs` |
 
 What the interface looks like is in `docs/SCREENS.md`, rendered from the real
-binary by `scripts/screens.py`.
+binary by `scripts/screens.py`. Those frames run with `--no-art` so they are
+identical on every machine and CI can diff them; the art itself is what the
+table above asserts.
 
 ## Build targets
 

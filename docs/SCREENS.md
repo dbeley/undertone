@@ -5,9 +5,10 @@ against `scripts/fixture_server.py`, so what is written here is what the
 interface draws. Regenerate with
 `python3 scripts/screens.py ./target/release/undertone`.
 
-Covers are characters here because the fixture runs with `--art=symbols`;
-on a terminal with sixel or kitty support they are images in the same
-places. See `docs/COMPATIBILITY.md`.
+Covers are shown as their placeholder slot: the generator runs with
+`--no-art` so these frames are identical on every machine and CI can
+diff them. What the art itself looks like in each protocol is in
+`docs/COMPATIBILITY.md`, and is asserted there rather than drawn here.
 
 ## The library
 
@@ -15,15 +16,15 @@ Album list, with the rail, the list's own header and the three-column bar.
 
 ```
 ▸ Albums   1│ Albums · random                                                                      1 / 3
-  Artists  2│        Fixture One
-  Starred  3│ yyy _y Test Artist · 2000
-  Later    4│     y~ 3 tracks
-  Lists    5│        Fixture Two
-  Queue    6│ yyy _y Other Band · 2001
-            │     y~ 3 tracks
-            │        Third
-            │ yyy _y Nobody · 2002
-            │     y~ 3 tracks
+  Artists  2│ ▸ ▚ ▚  Fixture One
+  Starred  3│        Test Artist · 2000
+  Later    4│        3 tracks
+  Lists    5│ ▚ ▚ ▚  Fixture Two
+  Queue    6│        Other Band · 2001
+            │        3 tracks
+            │ ▚ ▚ ▚  Third
+            │        Nobody · 2002
+            │        3 tracks
             │
             │
             │
@@ -52,11 +53,11 @@ Enter on an album to start         │S sort · w grid · Enter · * star│end 
 
 ```
 ▸ Albums   1│ Albums · random                                                                      1 / 3
-  Artists  2│     l             l             l
+  Artists  2│ ▚ ▚ ▚ ▚ ▚ ▚   ▚ ▚ ▚ ▚ ▚ ▚   ▚ ▚ ▚ ▚ ▚ ▚
   Starred  3│
-  Later    4│   yyy yyyy      yyy yyyy      yyy yyyy
-  Lists    5│          y             y             y
-  Queue    6│      y             y             y
+  Later    4│
+  Lists    5│
+  Queue    6│
             │ ▸Fixture One   Fixture Two   Third
             │
             │
@@ -238,15 +239,15 @@ Three panes: albums, similar artists, biography. Tab moves between them.
 ```
   Albums   1│ Artist                                                                         Test Artist
 ▸ Artists  2│ albums                                        │ similar
-  Starred  3│        Fixture One                            │ Similar One
-  Later    4│ yyy _y Test Artist · 2000                     │ Similar Two
-  Lists    5│     y~ 3 tracks                               │
-  Queue    6│        Fixture Two                            │
-            │ yyy _y Other Band · 2001                      │
-            │     y~ 3 tracks                               │
-            │        Third                                  │
-            │ yyy _y Nobody · 2002                          │
-            │     y~ 3 tracks                               │
+  Starred  3│ ▸ ▚ ▚  Fixture One                            │ Similar One
+  Later    4│        Test Artist · 2000                     │ Similar Two
+  Lists    5│        3 tracks                               │
+  Queue    6│ ▚ ▚ ▚  Fixture Two                            │
+            │        Other Band · 2001                      │
+            │        3 tracks                               │
+            │ ▚ ▚ ▚  Third                                  │
+            │        Nobody · 2002                          │
+            │        3 tracks                               │
             │                                               │
             │                                               │
             │                                               │ ──────────────────────────────────────────

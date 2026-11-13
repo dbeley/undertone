@@ -78,7 +78,11 @@ def main():
     try:
         app = App(
             binary,
-            ["--player=null", "--art=symbols", "--server", server, "--username", "demo"],
+            # No art on purpose: these frames document the layout, and artwork
+            # is drawn with characters chafa picks from the font it detects, so
+            # it differs between machines. Art is covered by the degradation
+            # matrix, which asserts on protocols rather than on glyphs.
+            ["--player=null", "--no-art", "--server", server, "--username", "demo"],
             state_dir=tempfile.mkdtemp(prefix="undertone-screens-"),
         )
         app.wait(6)
@@ -134,9 +138,10 @@ def main():
         "interface draws. Regenerate with",
         "`python3 scripts/screens.py ./target/release/undertone`.",
         "",
-        "Covers are characters here because the fixture runs with `--art=symbols`;",
-        "on a terminal with sixel or kitty support they are images in the same",
-        "places. See `docs/COMPATIBILITY.md`.",
+        "Covers are shown as their placeholder slot: the generator runs with",
+        "`--no-art` so these frames are identical on every machine and CI can",
+        "diff them. What the art itself looks like in each protocol is in",
+        "`docs/COMPATIBILITY.md`, and is asserted there rather than drawn here.",
         "",
     ]
     for title, note, frame in shots:

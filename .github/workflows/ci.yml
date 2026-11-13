@@ -34,8 +34,9 @@ jobs:
         # server, so it needs no network.
         run: nix develop -c python3 scripts/degradation.py result/bin/undertone
       - name: screens are current
-        # Regenerate the frames from the binary and fail if the committed copy
-        # drifted. The generator seeds its own state, so the output is stable.
+        # The generator runs with --no-art, so the frames are identical on every
+        # machine and a strict diff is meaningful: any layout change must be
+        # committed with it.
         run: |
           nix develop -c python3 scripts/screens.py result/bin/undertone
           git diff --exit-code -- docs/SCREENS.md
