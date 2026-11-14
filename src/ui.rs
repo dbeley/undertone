@@ -1969,31 +1969,62 @@ fn draw_bar_track(frame: &mut Frame, app: &App, area: Rect) {
         }
         meta.push_str(&format);
     }
-    if area.height > 2 && !meta.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                truncate_chars(&meta, usize::from(area.width)),
-                Style::default().fg(MUTED),
-            ))),
-            row(2),
-        );
+    if area.height > 2 {
+        // Repeat and shuffle ride along on this quiet line, right-aligned and
+        // one letter each, and vanish entirely when they are off. The bar is
+        // for what is happening now, not for a permanent report of what is not.
+        let flags = queue_flags(&app.queue);
+        let flags_w = flags.chars().count() as u16;
+        let meta_w = area
+            .width
+            .saturating_sub(if flags.is_empty() { 0 } else { flags_w + 2 });
+        if !meta.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    truncate_chars(&meta, usize::from(meta_w)),
+                    Style::default().fg(MUTED),
+                ))),
+                row(2),
+            );
+        }
+        if !flags.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(flags, Style::default().fg(MUTED))))
+                    .alignment(Alignment::Right),
+                row(2),
+            );
+        }
     }
 }
 
-/// Playback state, plus whatever the last action said, plus the keys.
-fn draw_bar_state(frame: &mut Frame, app: &App, area: Rect) {
-    let row = |offset: u16| Rect {
-        y: area.y + offset,
-        height: 1,
-        ..area
-    };
+/// Repeat and shuffle as two letters, or nothing at all when both are off.
+fn queue_flags(queue: &crate::queue::Queue) -> String {
+    let mut flags = Vec::new();
+    match queue.repeat() {
+        crate::queue::Repeat::Off => {}
+        crate::queue::Repeat::All => flags.push("r"),
+        // Repeat-one is a mode of its own, and a bare `r` would hide it.
+        crate::queue::Repeat::One => flags.push("r1"),
+    }
+    if queue.is_shuffled() {
+        flags.push("s");
+    }
+    flags.join(" ")
+}
 
+/// Whatever the last action said, plus the keys.
+///
+/// With nothing to say the keys move up: an empty row above them would be a
+/// hole in the bar, and the repeat/shuffle state that used to fill this line
+/// now lives beside the track as two letters.
+fn draw_bar_state(frame: &mut Frame, app: &App, area: Rect) {
+    let mut top = 0;
     let fresh = app
         .status
         .as_ref()
         .filter(|status| status.at.elapsed() < crate::app::STATUS_TTL);
-    match fresh {
-        Some(status) => frame.render_widget(
+    if let Some(status) = fresh {
+        frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 truncate_chars(&status.text, usize::from(area.width)),
                 if status.error {
@@ -2002,23 +2033,17 @@ fn draw_bar_state(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(ACCENT)
                 },
             ))),
-            row(0),
-        ),
-        None => frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!(
-                    "repeat {} · shuffle {}",
-                    app.queue.repeat().label(),
-                    if app.queue.is_shuffled() { "on" } else { "off" }
-                ),
-                Style::default().fg(MUTED),
-            ))),
-            row(0),
-        ),
+            Rect {
+                y: area.y,
+                height: 1,
+                ..area
+            },
+        );
+        top = 1;
     }
 
     let hints = key_hints(app.view);
-    if area.height > 1 && !hints.is_empty() {
+    if area.height > top && !hints.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 hints,
@@ -2026,8 +2051,8 @@ fn draw_bar_state(frame: &mut Frame, app: &App, area: Rect) {
             )))
             .wrap(Wrap { trim: true }),
             Rect {
-                y: area.y + 1,
-                height: area.height - 1,
+                y: area.y + top,
+                height: area.height - top,
                 ..area
             },
         );
@@ -2035,6 +2060,9 @@ fn draw_bar_state(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
+    // The heading is furniture and stays dim; the titles underneath are what
+    // you are reading, so they get the normal foreground. Dimming both, as
+    // this used to, made the label and the queue look like the same thing.
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "next",
@@ -2054,7 +2082,7 @@ fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "end of queue",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(MUTED),
             ))),
             Rect {
                 y: area.y + 1,
@@ -2068,7 +2096,7 @@ fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 truncate_chars(&item.title, usize::from(area.width)),
-                Style::default().fg(MUTED),
+                Style::default(),
             ))),
             Rect {
                 y: area.y + 1 + index as u16,
@@ -2506,11 +2534,22 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_shows_repeat_and_shuffle_state() {
-        let app = test_app(ArtProtocol::Off);
+    fn the_bar_shows_repeat_and_shuffle_as_two_quiet_letters() {
+        let mut app = playing_app();
         let text = rendered_text(&app, 100, 24);
-        assert!(text.contains("repeat off"), "{text}");
-        assert!(text.contains("shuffle off"), "{text}");
+        assert!(!text.contains("repeat"), "off is not worth a word: {text}");
+        assert!(!text.contains("shuffle"), "off is not worth a word: {text}");
+
+        app.queue.set_repeat(crate::queue::Repeat::All);
+        app.queue.set_shuffle(true);
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("r s"), "both are on: {text}");
+        assert!(!text.contains("repeat"), "still not a word: {text}");
+
+        // Repeat-one is a mode of its own, and a bare `r` would hide it.
+        app.queue.set_repeat(crate::queue::Repeat::One);
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("r1 s"), "{text}");
     }
 
     #[test]
@@ -2527,24 +2566,39 @@ mod tests {
     }
 
     #[test]
-    fn status_messages_take_over_the_state_line_and_expire() {
+    fn status_messages_take_the_top_line_until_they_expire() {
         let mut app = test_app(ArtProtocol::Off);
-        app.status("starred an album");
+        app.status("album starred");
         let text = rendered_text(&app, 100, 24);
-        assert!(text.contains("starred an album"), "{text}");
+        assert!(text.contains("album starred"), "{text}");
+
+        let bar_top = (24 - BAR_HEIGHT) as usize + 1;
+        let lines: Vec<&str> = text.lines().collect();
         assert!(
-            !text.contains("repeat off"),
-            "the message replaces the state"
+            lines[bar_top].contains("album starred"),
+            "the message owns the bar's first line: {:?}",
+            lines[bar_top]
+        );
+        assert!(
+            lines[bar_top + 1].contains("S sort"),
+            "and the keys sit under it: {:?}",
+            lines[bar_top + 1]
         );
 
-        // Past the TTL the state comes back.
+        // Past the TTL the message goes, and the keys move up into its place.
         app.status = Some(crate::app::Status {
-            text: "starred an album".into(),
+            text: "album starred".into(),
             at: std::time::Instant::now() - crate::app::STATUS_TTL * 2,
             error: false,
         });
         let text = rendered_text(&app, 100, 24);
-        assert!(text.contains("repeat off"), "{text}");
+        assert!(!text.contains("album starred"), "{text}");
+        assert!(
+            text.lines()
+                .nth(bar_top)
+                .is_some_and(|line| line.contains("S sort")),
+            "the keys take the freed line: {text}"
+        );
     }
 
     fn playlist(name: &str, tracks: usize) -> crate::subsonic::Playlist {

@@ -226,9 +226,9 @@ Artists as a list; `w` turns this into a wall of covers.
             │
             │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │repeat off · shuffle off        │next
-Enter on an album to start         │S sort · w layout · Enter open ·│end of queue
-                                   │h back                          │
+nothing playing                    │S sort · w layout · Enter open ·│next
+Enter on an album to start         │h back                          │end of queue
+                                   │                                │
                                    │                                │
 ```
 
@@ -263,9 +263,9 @@ Three panes: albums, similar artists, biography. Tab moves between them.
             │                                               │
             │                                               │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │repeat off · shuffle off        │next
-Enter on an album to start         │Tab pane · t songs · Enter open │end of queue
-                                   │· h back                        │
+nothing playing                    │Tab pane · t songs · Enter open │next
+Enter on an album to start         │· h back                        │end of queue
+                                   │                                │
                                    │                                │
 ```
 
