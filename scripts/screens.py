@@ -31,10 +31,13 @@ class App:
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("UNDERTONE_PASSWORD", "fixture")
         # A throwaway state directory: otherwise a session saved by a real run
-        # is restored, and the frames depend on where you last were.
+        # is restored, and the frames depend on where you last were. The config
+        # directory comes along, because the bar names the file it loaded and
+        # that path is different on every machine.
         if state_dir:
             env["XDG_STATE_HOME"] = state_dir
             env["XDG_CACHE_HOME"] = state_dir
+            env["XDG_CONFIG_HOME"] = state_dir
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.execve(binary, [binary, *args], env)
