@@ -65,9 +65,16 @@ impl CellSize {
 
     /// Ask the terminal. Requires a TTY; falls back silently when unavailable
     /// (pipes, CI, `TERM=dumb`).
+    ///
+    /// `window_size()` reports the size of the window in pixels *and* in
+    /// cells, so one cell is the first divided by the second. Using the window
+    /// size directly is how a 1840x1025 terminal became a "1840x1025 cell".
     pub fn detect() -> Self {
         match crossterm::terminal::window_size() {
-            Ok(size) => Self::new(u32::from(size.width), u32::from(size.height)),
+            Ok(size) => Self::new(
+                u32::from(size.width) / u32::from(size.columns.max(1)),
+                u32::from(size.height) / u32::from(size.rows.max(1)),
+            ),
             Err(_) => Self::FALLBACK,
         }
     }
@@ -260,6 +267,22 @@ mod tests {
             }
         );
         assert_eq!(CellSize::new(8, 17), CellSize::FALLBACK);
+    }
+
+    #[test]
+    fn a_window_size_is_turned_into_one_cell() {
+        // What the Pocket Reform's foot reports: 115x25 cells of 1840x1025 px.
+        let columns = 115;
+        let rows = 25;
+        let cell = CellSize::new(1840 / columns, 1025 / rows);
+        assert_eq!(
+            cell,
+            CellSize {
+                width: 16,
+                height: 41
+            }
+        );
+        assert_eq!(cell.pixels_for(13, 5), (208, 205));
     }
 
     #[test]
