@@ -2085,6 +2085,13 @@ impl App {
         {
             self.artist_sort = sort;
         }
+        if let Some(layout) = session
+            .artist_layout
+            .as_deref()
+            .and_then(AlbumLayout::from_key)
+        {
+            self.artist_layout = layout;
+        }
         if let Some(layout) = session.layout.as_deref().and_then(AlbumLayout::from_key) {
             self.layout = layout;
         }
@@ -2129,6 +2136,7 @@ impl App {
             },
             sort: Some(self.sort.as_str().to_string()),
             artist_sort: Some(self.artist_sort.label().to_string()),
+            artist_layout: Some(self.artist_layout.key().to_string()),
             layout: Some(self.layout.key().to_string()),
             starred_layout: Some(self.favorites_layout.key().to_string()),
             later_layout: Some(self.later_layout.key().to_string()),
@@ -2993,6 +3001,8 @@ mod tests {
         let mut before = app();
         before.favorites_layout = AlbumLayout::Grid;
         before.later_layout = AlbumLayout::List;
+        // The artist list has its own wall and must survive a restart too.
+        before.artist_layout = AlbumLayout::Grid;
         let saved = before.session_snapshot();
 
         let mut fresh = app();
@@ -3000,6 +3010,7 @@ mod tests {
 
         assert_eq!(fresh.favorites_layout, AlbumLayout::Grid);
         assert_eq!(fresh.later_layout, AlbumLayout::List);
+        assert_eq!(fresh.artist_layout, AlbumLayout::Grid);
     }
 
     #[test]

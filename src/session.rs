@@ -45,6 +45,8 @@ pub struct Session {
     #[serde(default)]
     pub artist_sort: Option<String>,
     #[serde(default)]
+    pub artist_layout: Option<String>,
+    #[serde(default)]
     pub layout: Option<String>,
     #[serde(default)]
     pub starred_layout: Option<String>,
@@ -64,7 +66,10 @@ impl Session {
             && self.view.is_none()
             && self.sort.is_none()
             && self.artist_sort.is_none()
+            && self.artist_layout.is_none()
             && self.layout.is_none()
+            && self.starred_layout.is_none()
+            && self.later_layout.is_none()
     }
 
     /// Load, or `None` when there is nothing usable to restore.
@@ -175,6 +180,7 @@ mod tests {
             seconds: 63.5,
             sort: Some("alphabeticalByName".into()),
             artist_sort: Some("a-z".into()),
+            artist_layout: Some("grid".into()),
             layout: Some("grid".into()),
             view: Some("queue".into()),
             ..Default::default()
@@ -190,6 +196,7 @@ mod tests {
         assert_eq!(loaded.queue[1].bit_rate, Some(900), "format survives");
         assert_eq!(loaded.sort.as_deref(), Some("alphabeticalByName"));
         assert_eq!(loaded.layout.as_deref(), Some("grid"));
+        assert_eq!(loaded.artist_layout.as_deref(), Some("grid"));
     }
 
     #[test]
