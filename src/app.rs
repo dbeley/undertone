@@ -1606,7 +1606,7 @@ impl App {
         self.needs_clear = true;
         let label = match next {
             AlbumLayout::List => "list",
-            AlbumLayout::Grid => "grid",
+            AlbumLayout::Grid => "wall",
         };
         self.status(format!("{}: {label}", self.view.name()));
     }
@@ -3770,7 +3770,7 @@ mod tests {
         assert_eq!(app.layout, AlbumLayout::Grid);
         assert_eq!(
             app.status.as_ref().map(|s| s.text.as_str()),
-            Some("albums: grid")
+            Some("albums: wall")
         );
         app.handle_key(key(KeyCode::Char('w')));
         assert_eq!(app.layout, AlbumLayout::List);

@@ -42,8 +42,8 @@ Album list, with the rail, the list's own header and the three-column bar.
             │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │fixture 1.16.1                  │next
-Enter on an album to start         │S sort · w grid · Enter · * star│end of queue
-                                   │· ? help                        │
+Enter on an album to start         │S sort · w layout · Enter · *   │end of queue
+                                   │star · ? help                   │
                                    │                                │
 ```
 
@@ -78,9 +78,9 @@ Enter on an album to start         │S sort · w grid · Enter · * star│end 
             │
             │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │albums: grid                    │next
-Enter on an album to start         │S sort · w grid · Enter · * star│end of queue
-                                   │· ? help                        │
+nothing playing                    │albums: wall                    │next
+Enter on an album to start         │S sort · w layout · Enter · *   │end of queue
+                                   │star · ? help                   │
                                    │                                │
 ```
 
@@ -227,8 +227,8 @@ Artists as a list; `w` turns this into a wall of covers.
             │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │repeat off · shuffle off        │next
-Enter on an album to start         │S sort · Enter open · h back    │end of queue
-                                   │                                │
+Enter on an album to start         │S sort · w layout · Enter open ·│end of queue
+                                   │h back                          │
                                    │                                │
 ```
 

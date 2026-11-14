@@ -1778,8 +1778,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from("j / k      move down / up"),
         Line::from("Ctrl-d/u   half-page down / up"),
-        Line::from("h / l      move left / right (grid) · h back"),
-        Line::from("w          toggle list / grid"),
+        Line::from("h / l      move left / right (wall) · h back"),
+        Line::from("w          toggle list / wall"),
         Line::from("g / G      first / last"),
         Line::from("Enter      open album · play track"),
         Line::from("p / Space  play / pause"),
@@ -2061,12 +2061,12 @@ fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
 /// Keys worth knowing on this screen, shown under the playback state.
 fn key_hints(view: View) -> &'static str {
     match view {
-        View::Albums => "S sort · w grid · Enter · * star · ? help",
+        View::Albums => "S sort · w layout · Enter · * star · ? help",
         View::AlbumDetail => "Enter play · * star · A artist · h back",
-        View::Artists => "S sort · Enter open · h back",
+        View::Artists => "S sort · w layout · Enter open · h back",
         View::ArtistDetail => "Tab pane · t songs · Enter open · h back",
-        View::Favorites => "Enter open · * unstar · h back",
-        View::ListenLater => "a remove · Enter open · h back",
+        View::Favorites => "w layout · Enter open · * unstar · h back",
+        View::ListenLater => "w layout · a remove · Enter open · h back",
         View::Playlists => "Enter open · h back",
         View::Search => "/ edit · Enter open · h back",
         View::PlaylistDetail => "Enter play · h back",
@@ -2676,13 +2676,45 @@ mod tests {
     }
 
     #[test]
+    fn the_layout_key_is_advertised_on_every_view_that_has_a_wall() {
+        // A view whose `w` has an effect must say so; the ones without a wall
+        // must not offer it.
+        for view in [
+            View::Albums,
+            View::Artists,
+            View::Favorites,
+            View::ListenLater,
+        ] {
+            assert!(
+                key_hints(view).contains("w layout"),
+                "{view:?} has a wall but hides the key: {}",
+                key_hints(view)
+            );
+        }
+        for view in [
+            View::AlbumDetail,
+            View::ArtistDetail,
+            View::Playlists,
+            View::Search,
+            View::PlaylistDetail,
+            View::Queue,
+        ] {
+            assert!(
+                !key_hints(view).contains("w "),
+                "{view:?} has no wall, so `w` does nothing there: {}",
+                key_hints(view)
+            );
+        }
+    }
+
+    #[test]
     fn hints_follow_the_view() {
         let mut app = test_app(ArtProtocol::Off);
         app.view = View::Queue;
         let text = rendered_text(&app, 96, 24);
         assert!(text.contains("> skip"), "{text}");
         assert!(
-            !text.contains("w grid"),
+            !text.contains("w layout"),
             "album hints do not follow you: {text}"
         );
     }

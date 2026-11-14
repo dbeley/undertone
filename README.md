@@ -54,8 +54,8 @@ mpv = "mpv"
 ```
 1-6        rail: albums · artists · starred · later · lists · queue
 j / k      move down / up      Ctrl-d/u  page down / up
-h / l      left / right (grid) · h back
-w          list / grid toggle  g / G   first / last
+h / l      left / right (wall) · h back
+w          list / wall toggle  g / G   first / last
 Enter      open album · play track    p / Space  play / pause
 > / <      next / prev         f / b   seek ±10s
 s / r      shuffle / repeat    +/-     volume      m  mute
