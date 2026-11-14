@@ -145,53 +145,59 @@ fn nav_owner(view: View) -> View {
 }
 
 fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+    // The numbered pages start on the rail's first row, so their labels line
+    // up with the first rows of content beside them. Search follows them: an
+    // extra row above would push the whole rail half a row out of step.
     let current = nav_owner(app.view);
-    for (index, (view, label, key)) in NAV_ITEMS.iter().enumerate() {
-        let y = area.y + index as u16;
+    let mut y = area.y;
+    for (view, label, key) in NAV_ITEMS.iter() {
         if y >= area.y + area.height {
             break;
         }
-        let active = *view == current;
-        let row = Rect {
-            x: area.x,
-            y,
-            width: area.width,
-            height: 1,
-        };
-        let line = Line::from(vec![
-            Span::styled(
-                if active { "▸ " } else { "  " },
-                Style::default().fg(ACCENT),
-            ),
-            Span::styled(
-                format!("{label:<9}"),
-                if active {
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(MUTED)
-                },
-            ),
-            Span::styled(
-                key.to_string(),
-                if active {
-                    Style::default().fg(ACCENT)
-                } else {
-                    Style::default().fg(MUTED)
-                },
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(line), row);
+        draw_rail_row(frame, area, y, label, *key, *view == current);
+        y += 1;
+    }
+    // Air, then search: it is not a numbered page, but it is the other way
+    // into the library and `/` alone is easy to forget.
+    if y < area.y + area.height {
+        y += 1;
+    }
+    if y < area.y + area.height {
+        draw_rail_row(frame, area, y, "Search", '/', app.view == View::Search);
     }
 }
 
-/// Where an artist's albums start, below the two-row header.
-fn artist_albums_area(area: Rect) -> Rect {
-    let header = ROW_HEIGHT.min(area.height);
-    Rect {
-        y: area.y + header,
-        height: area.height.saturating_sub(header),
-        ..area
-    }
+/// One line of the rail: the marker, a label with its key on the right.
+fn draw_rail_row(frame: &mut Frame, area: Rect, y: u16, label: &str, key: char, active: bool) {
+    let row = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: 1,
+    };
+    let line = Line::from(vec![
+        Span::styled(
+            if active { "▸ " } else { "  " },
+            Style::default().fg(ACCENT),
+        ),
+        Span::styled(
+            format!("{label:<9}"),
+            if active {
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(MUTED)
+            },
+        ),
+        Span::styled(
+            key.to_string(),
+            if active {
+                Style::default().fg(ACCENT)
+            } else {
+                Style::default().fg(MUTED)
+            },
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), row);
 }
 
 fn visible_albums(area: Rect) -> usize {
@@ -212,9 +218,6 @@ fn album_row_rect(area: Rect, index_in_view: usize) -> Rect {
 /// Returns nothing: the result is stored in `app.placements` for the painter.
 pub fn collect_placements(app: &mut App, area: Rect) {
     app.placements.clear();
-    if matches!(app.protocol, ArtProtocol::Off) {
-        return;
-    }
 
     let shell = shell_layout(area);
     let main = shell.body;
@@ -244,21 +247,27 @@ pub fn collect_placements(app: &mut App, area: Rect) {
             }
         }
         View::AlbumDetail => {
+            // The track list starts below the cover block, one line a track.
+            let tracks_h = main.height.saturating_sub(main.height.min(COVER_SPACE_H));
             if let Some(album) = app.detail.as_ref() {
                 if let Some(cover) = album.cover_art.as_deref() {
-                    let colors = app.settings.cover_colors;
                     // The cover's column, as draw_album_detail lays it out: the
                     // information sits one cell to its right.
                     let thumb = app.square_thumb(COVER_W, main.height.min(COVER_SPACE_H));
-                    let key = app
-                        .art
-                        .request(cover, thumb.art_cols, thumb.art_rows, colors, false);
+                    let key = app.art.request(
+                        cover,
+                        thumb.art_cols,
+                        thumb.art_rows,
+                        app.settings.palette,
+                        false,
+                    );
                     if app.art.is_ready(&key) {
                         app.placements
                             .push(Placement::new(key, main.y, main.x, thumb.rows, thumb.cols));
                     }
                 }
             }
+            app.ensure_detail_track_visible(tracks_h);
         }
         View::Artists => {
             app.ensure_artist_visible(main.width, main.height);
@@ -285,26 +294,54 @@ pub fn collect_placements(app: &mut App, area: Rect) {
             }
         }
         View::ArtistDetail => {
-            let albums_area = artist_albums_area(main);
-            app.ensure_artist_album_visible(albums_area.height);
-            let covers: Vec<Option<String>> = app
-                .artist_detail
+            // Covers go in the albums pane only, and only while that tab is
+            // showing: the top-songs tab draws text where the rows used to be,
+            // so placing art below the pane put it over the wrong lines.
+            let panes = artist_pane_rects(main);
+            let albums_area = panes.albums_body();
+            if app.artist_left == ArtistLeft::Albums {
+                app.ensure_artist_album_visible(albums_area.height);
+                let covers: Vec<Option<String>> = app
+                    .artist_detail
+                    .as_ref()
+                    .map(|artist| {
+                        artist
+                            .album
+                            .iter()
+                            .map(|album| album.cover_art.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                collect_list_placements(
+                    app,
+                    albums_area,
+                    &covers,
+                    app.artist_album_scroll,
+                    app.artist_album_selected + visible_albums(albums_area),
+                );
+            } else {
+                app.ensure_artist_songs_visible(albums_area.height);
+            }
+            let similar = panes.similar_body();
+            app.ensure_artist_similar_visible(similar.height);
+            // The biography is wrapped to the pane, so its length is only
+            // knowable here. Record it for j/k and keep the scroll in range.
+            let bio = panes.biography_body();
+            let text = app
+                .artist_info
                 .as_ref()
-                .map(|artist| {
-                    artist
-                        .album
-                        .iter()
-                        .map(|album| album.cover_art.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            collect_list_placements(
-                app,
-                albums_area,
-                &covers,
-                app.artist_album_scroll,
-                app.artist_album_selected + visible_albums(albums_area),
-            );
+                .and_then(|info| info.biography.as_deref())
+                .unwrap_or("");
+            app.artist_bio_lines = if text.trim().is_empty() {
+                0
+            } else {
+                wrap(text, usize::from(bio.width).max(1)).len()
+            };
+            app.artist_bio_page = usize::from(bio.height);
+            let max = app
+                .artist_bio_lines
+                .saturating_sub(app.artist_bio_page.max(1));
+            app.artist_bio_scroll = app.artist_bio_scroll.min(max);
         }
         View::Favorites => {
             app.ensure_favorite_visible(main.width, main.height);
@@ -355,7 +392,12 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                 ),
             }
         }
-        View::Playlists | View::PlaylistDetail | View::Search | View::Queue | View::Help => {}
+        View::Playlists => app.ensure_playlist_visible(main.height),
+        View::PlaylistDetail => app.ensure_playlist_detail_visible(main.height),
+        View::Search => app.ensure_search_visible(main.height),
+        // The queue's first and last rows are its border.
+        View::Queue => app.ensure_queue_visible(main.height.saturating_sub(2)),
+        View::Help => {}
     }
 
     // Symbol art is painted as cells by ratatui, so the painter must not see
@@ -387,7 +429,7 @@ fn collect_grid_placements(
             cover,
             wall.thumb.art_cols,
             wall.thumb.art_rows,
-            app.settings.thumb_colors,
+            app.settings.palette,
             index >= selected + per_page,
         );
         if !app.art.is_ready(&key) {
@@ -432,7 +474,7 @@ fn collect_list_placements(
             cover,
             thumb.art_cols,
             thumb.art_rows,
-            app.settings.thumb_colors,
+            app.settings.palette,
             index >= prefetch_from,
         );
         // Only ask for a paint once the blob actually exists: otherwise the
@@ -493,7 +535,7 @@ pub fn emit_erases(
                             .write_all(&kitty_delete(kitty_id(key)))?;
                     }
                 }
-                ArtProtocol::Symbols | ArtProtocol::Off => {}
+                ArtProtocol::Symbols => {}
             }
         }
     }
@@ -714,7 +756,7 @@ fn draw_listen_later(frame: &mut Frame, app: &App, area: Rect) {
     if app.listen_albums.is_empty() {
         frame.render_widget(
             Paragraph::new(
-                "Nothing saved. Press a on an album to keep it for later; L returns here.",
+                "Nothing saved. Press z on an album to keep it for later; 4 returns here.",
             )
             .style(Style::default().fg(MUTED)),
             area,
@@ -876,7 +918,7 @@ fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) 
             cover,
             thumb.art_cols,
             thumb.art_rows,
-            app.settings.thumb_colors,
+            app.settings.palette,
             app.protocol,
         )
     });
@@ -1087,8 +1129,8 @@ fn draw_artist_songs(frame: &mut Frame, app: &App, area: Rect) {
 
     let rows = usize::from(area.height);
     let offset = app
-        .artist_song_selected
-        .saturating_sub(rows.saturating_sub(1));
+        .artist_song_scroll
+        .min(app.artist_songs.len().saturating_sub(rows.max(1)));
     for slot in 0..rows {
         let index = offset + slot;
         let Some(song) = app.artist_songs.get(index) else {
@@ -1129,8 +1171,8 @@ fn draw_similar_pane(frame: &mut Frame, app: &App, area: Rect) {
 
     let rows = usize::from(area.height);
     let offset = app
-        .artist_similar_selected
-        .saturating_sub(rows.saturating_sub(1));
+        .artist_similar_scroll
+        .min(info.similar_artist.len().saturating_sub(rows.max(1)));
     for slot in 0..rows {
         let index = offset + slot;
         let Some(artist) = info.similar_artist.get(index) else {
@@ -1174,8 +1216,12 @@ fn draw_biography_pane(frame: &mut Frame, app: &App, area: Rect) {
 
     let width = usize::from(area.width).max(1);
     let lines = wrap(text, width);
+    let height = usize::from(area.height).max(1);
+    let offset = app
+        .artist_bio_scroll
+        .min(lines.len().saturating_sub(height));
     for slot in 0..usize::from(area.height) {
-        let index = app.artist_bio_scroll + slot;
+        let index = offset + slot;
         let Some(line) = lines.get(index) else {
             break;
         };
@@ -1392,7 +1438,7 @@ fn draw_wall(
                 cover,
                 size.art_cols,
                 size.art_rows,
-                app.settings.thumb_colors,
+                app.settings.palette,
                 app.protocol,
             )
         });
@@ -1502,7 +1548,9 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
 
     // Track list.
     let rows = body.height as usize;
-    let offset = app.detail_selected.saturating_sub(rows.saturating_sub(1));
+    let offset = app
+        .detail_scroll
+        .min(album.song.len().saturating_sub(rows.max(1)));
     for slot in 0..rows {
         let index = offset + slot;
         let Some(song) = album.song.get(index) else {
@@ -1553,7 +1601,10 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let rows = usize::from(area.height);
-    let offset = app.search.selected.saturating_sub(rows.saturating_sub(1));
+    let offset = app
+        .search
+        .scroll
+        .min(app.search.hits.len().saturating_sub(rows.max(1)));
     for slot in 0..rows {
         let index = offset + slot;
         let Some(hit) = app.search.hits.get(index) else {
@@ -1585,7 +1636,9 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
             .max(8);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!("{kind:<6}"), Style::default().fg(MUTED)),
+                // Seven, not six: "artist" fills six cells, and a width of six
+                // left no air before the name it was labelling.
+                Span::styled(format!("{kind:<7}"), Style::default().fg(MUTED)),
                 Span::styled(
                     truncate_chars(&name, usize::from(area.width).saturating_sub(20).max(8)),
                     if selected {
@@ -1623,7 +1676,9 @@ fn draw_playlists(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let rows = usize::from(area.height);
-    let offset = app.playlist_selected.saturating_sub(rows.saturating_sub(1));
+    let offset = app
+        .playlist_scroll
+        .min(app.playlists.len().saturating_sub(rows.max(1)));
     for slot in 0..rows {
         let index = offset + slot;
         let Some(playlist) = app.playlists.get(index) else {
@@ -1678,7 +1733,9 @@ fn draw_playlist_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let rows = usize::from(area.height);
-    let offset = app.playlist_selected.saturating_sub(rows.saturating_sub(1));
+    let offset = app
+        .playlist_detail_scroll
+        .min(playlist.entry.len().saturating_sub(rows.max(1)));
     for slot in 0..rows {
         let index = offset + slot;
         let Some(song) = playlist.entry.get(index) else {
@@ -1742,7 +1799,9 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
     let playing = app.queue.position();
     let selected = app.queue_cursor();
     let rows = inner.height as usize;
-    let offset = selected.saturating_sub(rows.saturating_sub(1));
+    let offset = app
+        .queue_view_scroll
+        .min(items.len().saturating_sub(rows.max(1)));
 
     for slot in 0..rows {
         let index = offset + slot;
@@ -1828,6 +1887,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         HelpRow::Group("go"),
         HelpRow::Key("1–6", "rail"),
         HelpRow::Key("/", "search"),
+        HelpRow::Key("o / i", "album / artist"),
         HelpRow::Key("Esc", "back"),
         HelpRow::Key("q", "quit"),
     ];
@@ -1849,9 +1909,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         HelpRow::Blank,
         HelpRow::Group("library"),
         HelpRow::Key("*", "star / unstar"),
-        HelpRow::Key("a", "save for later"),
-        HelpRow::Key("S", "sort"),
-        HelpRow::Key("R", "reload"),
+        HelpRow::Key("a / A", "queue next / end"),
+        HelpRow::Key("z", "save for later"),
+        HelpRow::Key("S / R", "sort / reload"),
+        HelpRow::Key("x, J/K", "delete, move"),
     ];
 
     let rows = left.len().max(right.len());
@@ -2185,16 +2246,16 @@ fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
 /// Keys worth knowing on this screen, shown under the playback state.
 fn key_hints(view: View) -> &'static str {
     match view {
-        View::Albums => "S sort · w layout · Enter · * star · ? help",
-        View::AlbumDetail => "Enter play · * star · A artist · h back",
+        View::Albums => "S sort · w layout · a next · A end · * star",
+        View::AlbumDetail => "Enter play · a next · A end · i artist · h back",
         View::Artists => "S sort · w layout · Enter open · h back",
-        View::ArtistDetail => "Tab pane · t songs · Enter open · h back",
-        View::Favorites => "w layout · Enter open · * unstar · h back",
-        View::ListenLater => "w layout · a remove · Enter open · h back",
+        View::ArtistDetail => "Tab pane · t songs · a next · A end · h back",
+        View::Favorites => "w layout · a next · A end · * unstar",
+        View::ListenLater => "w layout · z remove · a next · A end",
         View::Playlists => "Enter open · h back",
-        View::Search => "/ edit · Enter open · h back",
-        View::PlaylistDetail => "Enter play · h back",
-        View::Queue => "Enter play · > skip · h back",
+        View::Search => "/ edit · Enter open · a next · A end",
+        View::PlaylistDetail => "Enter play · a next · A end · h back",
+        View::Queue => "Enter play · x delete · J/K move · o/i album/artist",
         View::Help => "",
     }
 }
@@ -2295,13 +2356,10 @@ mod tests {
             password: "demo".into(),
             scrobble: false,
             auto_dj: false,
-            art_mode: "sixel".into(),
-            thumb_colors: 16,
-            cover_colors: 240,
+            palette: crate::config::Palette::Partial,
             cache_dir: PathBuf::from("/tmp/undertone-ui-test"),
             cache_bytes: 1024 * 1024,
             mpv_binary: PathBuf::from("mpv"),
-            transcode: false,
             backdrop: [0, 0, 0],
         };
         // No image source: placements are computed but no blobs ever arrive,
@@ -2363,7 +2421,7 @@ mod tests {
             let Some(cover) = album.cover_art.as_deref() else {
                 continue;
             };
-            let key = ArtService::key(cover, cols, rows, 16, ArtProtocol::Sixel);
+            let key = ArtService::key(cover, cols, rows, app.settings.palette, ArtProtocol::Sixel);
             app.art.force_blob(&key, b"\x1bPfake".to_vec());
         }
     }
@@ -2519,11 +2577,55 @@ mod tests {
                 "al-a_cover",
                 thumb.art_cols,
                 thumb.art_rows,
-                16,
+                crate::config::Palette::Partial,
                 ArtProtocol::Sixel
             ),
             "the key names the size draw_row_thumb looks for"
         );
+    }
+
+    #[test]
+    fn artist_cover_art_lands_in_the_albums_pane() {
+        let mut app = test_app(ArtProtocol::Sixel);
+        app.view = View::ArtistDetail;
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Artist".into(),
+            album: vec![album_with_cover("a"), album_with_cover("b")],
+            ..Default::default()
+        });
+        let thumb = app.list_thumb();
+        {
+            let albums = &app.artist_detail.as_ref().unwrap().album;
+            for album in albums {
+                let key = ArtService::key(
+                    album.cover_art.as_deref().unwrap(),
+                    thumb.art_cols,
+                    thumb.art_rows,
+                    app.settings.palette,
+                    ArtProtocol::Sixel,
+                );
+                app.art.force_blob(&key, b"\x1bPfake".to_vec());
+            }
+        }
+        let area = Rect::new(0, 0, 100, 30);
+        collect_placements(&mut app, area);
+
+        let panes = artist_pane_rects(shell_layout(area).body);
+        let body = panes.albums_body();
+        assert_eq!(app.placements.len(), 2);
+        for (slot, placement) in app.placements.iter().enumerate() {
+            assert_eq!(
+                (placement.row, placement.col),
+                (body.y + slot as u16 * ROW_HEIGHT, body.x),
+                "covers sit on the album rows, not below the pane"
+            );
+        }
+
+        // The top-songs tab has no covers, so none may be placed over it.
+        app.artist_left = ArtistLeft::Songs;
+        collect_placements(&mut app, area);
+        assert!(app.placements.is_empty(), "no album art over the songs");
     }
 
     #[test]
@@ -2536,7 +2638,7 @@ mod tests {
     }
 
     fn playing_app() -> App {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.now.track = Some(crate::queue::QueueItem {
             id: "s1".into(),
             title: "Everything In Its Right Place".into(),
@@ -2629,7 +2731,7 @@ mod tests {
 
     #[test]
     fn the_header_carries_the_view_name_and_its_sort() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.view = View::Albums;
         let text = rendered_text(&app, 100, 24);
         assert!(text.contains("Albums · random"), "{text}");
@@ -2642,7 +2744,7 @@ mod tests {
 
     #[test]
     fn status_messages_take_the_top_line_until_they_expire() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.status("album starred");
         let text = rendered_text(&app, 100, 24);
         assert!(text.contains("album starred"), "{text}");
@@ -2696,7 +2798,7 @@ mod tests {
 
     #[test]
     fn the_search_box_takes_over_the_header_while_typing() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.search.typing = true;
         app.search.query = "radio".into();
 
@@ -2709,7 +2811,7 @@ mod tests {
 
     #[test]
     fn search_rows_name_artists_as_well_as_albums_and_songs() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.view = View::Search;
         app.search.query = "radio".into();
         app.search.hits = vec![
@@ -2730,14 +2832,17 @@ mod tests {
         let text = rendered_text(&app, 100, 24);
         assert!(text.contains("album"), "{text}");
         assert!(text.contains("artist"), "{text}");
-        assert!(text.contains("Radiohead"), "{text}");
+        assert!(
+            text.contains("artist Radiohead"),
+            "the kind label needs air before the name: {text}"
+        );
         assert!(text.contains("9 albums"), "{text}");
         assert!(text.contains("1 / 3"), "{text}");
     }
 
     #[test]
     fn search_results_say_which_kind_each_row_is() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.view = View::Search;
         app.search.query = "kid".into();
         app.search.hits = vec![
@@ -2759,7 +2864,7 @@ mod tests {
 
     #[test]
     fn playlists_are_listed_with_their_size() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.playlists = vec![playlist("morning", 12), playlist("focus", 4)];
         app.view = View::Playlists;
 
@@ -2775,7 +2880,7 @@ mod tests {
 
     #[test]
     fn a_playlist_shows_its_tracks_numbered() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.playlist_detail = Some(playlist("morning", 3));
         app.view = View::PlaylistDetail;
 
@@ -2790,7 +2895,7 @@ mod tests {
 
     #[test]
     fn the_rail_lists_playlists_and_keeps_the_queue_last() {
-        let app = test_app(ArtProtocol::Off);
+        let app = test_app(ArtProtocol::Symbols);
         let text = rendered_text(&app, 100, 24);
         assert!(text.contains("Lists    5"), "{text}");
         assert!(text.contains("Queue    6"), "{text}");
@@ -2798,7 +2903,7 @@ mod tests {
 
     #[test]
     fn the_rail_shows_its_jump_keys_and_a_rule() {
-        let app = test_app(ArtProtocol::Off);
+        let app = test_app(ArtProtocol::Symbols);
         let text = rendered_text(&app, 96, 24);
         assert!(text.contains("▸ Albums"), "{text}");
         // The key used to be clipped off the end of the rail; spacing matters.
@@ -2808,6 +2913,10 @@ mod tests {
         );
         assert!(text.contains("Starred  3"), "{text}");
         assert!(
+            text.contains("Search   /"),
+            "search has a home on the rail: {text}"
+        );
+        assert!(
             text.contains('│'),
             "a rule separates the rail from the view"
         );
@@ -2816,7 +2925,7 @@ mod tests {
     #[test]
     fn the_bar_is_there_with_nothing_playing_and_carries_hints() {
         // No track: the bar still exists, says so, and advertises keys.
-        let app = test_app(ArtProtocol::Off);
+        let app = test_app(ArtProtocol::Symbols);
         let text = rendered_text(&app, 96, 24);
         assert!(text.contains("nothing playing"), "{text}");
         assert!(
@@ -2859,10 +2968,10 @@ mod tests {
 
     #[test]
     fn hints_follow_the_view() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.view = View::Queue;
         let text = rendered_text(&app, 96, 24);
-        assert!(text.contains("> skip"), "{text}");
+        assert!(text.contains("x delete"), "{text}");
         assert!(
             !text.contains("w layout"),
             "album hints do not follow you: {text}"
@@ -2870,7 +2979,7 @@ mod tests {
     }
     #[test]
     fn the_help_sheet_fits_an_eighty_by_twenty_four_terminal() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.view = View::Help;
         let text = rendered_text(&app, 80, 24);
         // The last key of the right column and the footer in the border: if
@@ -2882,7 +2991,7 @@ mod tests {
 
     #[test]
     fn the_help_sheet_gives_each_key_a_row_of_its_own() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.view = View::Help;
         let text = rendered_text(&app, 100, 30);
         for meaning in [
@@ -2905,7 +3014,7 @@ mod tests {
 
     #[test]
     fn the_rail_marks_the_current_page() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.view = View::Albums;
         let text = rendered_text(&app, 80, 24);
         assert!(text.contains("Albums"), "{text}");
@@ -2926,7 +3035,7 @@ mod tests {
     #[test]
     fn an_album_detail_still_shows_albums_as_the_current_page() {
         // Being inside an album should not make the rail look like nowhere.
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.detail = Some(album_with_cover("x"));
         app.view = View::AlbumDetail;
         let text = rendered_text(&app, 80, 24);
@@ -2934,7 +3043,7 @@ mod tests {
     }
     #[test]
     fn the_artists_view_lists_names_and_album_counts() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.artists = vec![
             undertone_artist("ar-1", "Aphex Twin", 3),
             undertone_artist("ar-2", "Boards of Canada", 1),
@@ -2948,7 +3057,7 @@ mod tests {
 
     #[test]
     fn a_starred_album_is_marked_in_every_list() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         let mut starred = album_with_cover("a");
         starred.starred = Some("2020-01-01".into());
         app.albums = vec![starred, album_with_cover("b")];
@@ -2972,7 +3081,7 @@ mod tests {
 
     #[test]
     fn the_artist_page_lists_that_artist_albums() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.artist_detail = Some(crate::subsonic::ArtistDetail {
             id: "ar-1".into(),
             name: "Aphex Twin".into(),
@@ -2996,7 +3105,7 @@ mod tests {
 
     #[test]
     fn the_left_pane_shows_its_two_tabs_and_the_song_list() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.artist_detail = Some(crate::subsonic::ArtistDetail {
             id: "ar-1".into(),
             name: "Aphex Twin".into(),
@@ -3024,7 +3133,7 @@ mod tests {
 
     #[test]
     fn an_artist_without_top_songs_says_so_in_the_pane() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.artist_detail = Some(crate::subsonic::ArtistDetail {
             id: "ar-1".into(),
             name: "Aphex Twin".into(),
@@ -3040,7 +3149,7 @@ mod tests {
 
     #[test]
     fn the_artist_page_shows_similar_artists_and_the_biography() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.artist_detail = Some(crate::subsonic::ArtistDetail {
             id: "ar-1".into(),
             name: "Aphex Twin".into(),
@@ -3073,7 +3182,7 @@ mod tests {
 
     #[test]
     fn a_missing_artist_info_leaves_the_page_usable() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.artist_detail = Some(crate::subsonic::ArtistDetail {
             id: "ar-1".into(),
             name: "Aphex Twin".into(),
@@ -3089,7 +3198,7 @@ mod tests {
 
     #[test]
     fn every_view_renders_without_panicking_at_a_small_size() {
-        let mut app = test_app(ArtProtocol::Off);
+        let mut app = test_app(ArtProtocol::Symbols);
         app.albums = vec![album_with_cover("a")];
         app.favorites = vec![album_with_cover("b")];
         app.artists = vec![undertone_artist("ar-1", "A", 1)];
