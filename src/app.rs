@@ -1008,10 +1008,10 @@ impl App {
             Ok(()) => {
                 // Reflect it locally rather than refetching: the server has
                 // accepted the change, and a round trip here would make the
-                // key feel laggy on a slow link.
+                // key feel laggy on a slow link. No status line either: the
+                // star appearing in the row is the feedback, and a message
+                // saying what the row already says is noise on the bar.
                 self.apply_star(&album.id, !starred);
-                let verb = if starred { "unstarred" } else { "starred" };
-                self.status(format!("{verb} {}", album.name));
             }
             Err(err) => self.error(format!("could not update star: {err}")),
         }

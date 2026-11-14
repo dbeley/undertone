@@ -820,16 +820,30 @@ fn draw_row(
         width: row.width.saturating_sub(gutter),
         height: ROW_HEIGHT,
     };
-    let prefix = if starred { "★ " } else { "" };
-    let mut lines = vec![
-        Line::from(Span::styled(
-            format!("{prefix}{title}"),
+    // A starred row gets a quiet star and a bold title; an unstarred one gets
+    // neither. Bolding every title, as this used to, left the star to carry the
+    // whole mark on its own, three characters that are easy to scan past.
+    let weight = if selected {
+        selected_style()
+    } else if starred {
+        title_style()
+    } else {
+        Style::default()
+    };
+    let mut head = Vec::new();
+    if starred {
+        head.push(Span::styled(
+            "★ ",
             if selected {
                 selected_style()
             } else {
-                title_style()
+                Style::default().fg(MUTED)
             },
-        )),
+        ));
+    }
+    head.push(Span::styled(title.to_string(), weight));
+    let mut lines = vec![
+        Line::from(head),
         Line::from(Span::styled(
             subtitle.to_string(),
             Style::default().fg(MUTED),
@@ -1466,8 +1480,15 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
         .year
         .map(|y| y.to_string())
         .unwrap_or_else(|| "—".to_string());
+    // The page is where `*` is pressed, so it has to show the answer: the star
+    // in the lists and the star here are the same mark.
+    let mut head = Vec::new();
+    if album.starred.is_some() {
+        head.push(Span::styled("★ ", Style::default().fg(MUTED)));
+    }
+    head.push(Span::styled(album.name.clone(), title_style()));
     let lines = vec![
-        Line::from(Span::styled(album.name.clone(), title_style())),
+        Line::from(head),
         Line::from(Span::styled(
             album.artist.clone().unwrap_or_default(),
             Style::default().fg(ACCENT),
@@ -2764,11 +2785,25 @@ mod tests {
     #[test]
     fn a_starred_album_is_marked_in_every_list() {
         let mut app = test_app(ArtProtocol::Off);
-        let mut album = album_with_cover("a");
-        album.starred = Some("2020-01-01".into());
-        app.albums = vec![album];
+        let mut starred = album_with_cover("a");
+        starred.starred = Some("2020-01-01".into());
+        app.albums = vec![starred, album_with_cover("b")];
         app.view = View::Albums;
-        assert!(rendered_text(&app, 80, 24).contains('★'));
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            text.contains("★ album a"),
+            "the star sits before the title: {text}"
+        );
+        assert!(
+            !text.contains("★ album b"),
+            "an unstarred album carries no mark: {text}"
+        );
+
+        // The page is where `*` is pressed, so it answers there too.
+        app.detail = app.albums.first().cloned();
+        app.view = View::AlbumDetail;
+        assert!(rendered_text(&app, 80, 24).contains("★ album a"));
     }
 
     #[test]
