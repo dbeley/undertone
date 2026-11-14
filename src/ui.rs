@@ -36,6 +36,12 @@ fn selected_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD).fg(ACCENT)
 }
 
+/// A track that is playing without being selected: the accent colour says it is
+/// making sound, without the bold that says Enter goes here.
+fn playing_style() -> Style {
+    Style::default().fg(ACCENT)
+}
+
 /// Rows the now-playing bar occupies, top border included: two lines beside
 /// the cover — track and clock, then progress plus album/format/next.
 /// Rows the bottom bar occupies, top border included: a title line and a
@@ -1712,27 +1718,45 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let items = app.queue.playback_items();
-    let current = app.queue.position();
+    let playing = app.queue.position();
+    let selected = app.queue_cursor();
     let rows = inner.height as usize;
-    let offset = current.unwrap_or(0).saturating_sub(rows.saturating_sub(1));
+    let offset = selected.saturating_sub(rows.saturating_sub(1));
 
     for slot in 0..rows {
         let index = offset + slot;
         let Some(item) = items.get(index) else {
             break;
         };
-        let is_current = Some(index) == current;
-        let marker = if is_current { "▶ " } else { "  " };
+        let is_playing = Some(index) == playing;
+        let is_selected = index == selected;
+        // Two different questions, two different marks: `▶` says this is what
+        // you hear, `›` says this is where Enter goes. A playing row that is
+        // also selected keeps `▶` and takes the selected colour.
+        let marker = if is_playing {
+            "▶ "
+        } else if is_selected {
+            "› "
+        } else {
+            "  "
+        };
+        let title = if is_selected {
+            selected_style()
+        } else if is_playing {
+            playing_style()
+        } else {
+            Style::default()
+        };
         let line = Line::from(vec![
-            Span::styled(marker, Style::default().fg(ACCENT)),
             Span::styled(
-                item.title.clone(),
-                if is_current {
-                    selected_style()
+                marker,
+                if is_selected || is_playing {
+                    Style::default().fg(ACCENT)
                 } else {
                     Style::default()
                 },
             ),
+            Span::styled(item.title.clone(), title),
             Span::styled(
                 format!(" — {}", item.artist.clone().unwrap_or_default()),
                 Style::default().fg(MUTED),
@@ -2435,6 +2459,29 @@ mod tests {
         let text = rendered_text(&app, 100, 24);
         assert!(text.contains("next"), "{text}");
         assert!(text.contains("The National Anthem"), "{text}");
+    }
+
+    #[test]
+    fn the_queue_marks_playing_and_selected_differently() {
+        let mut app = playing_app(); // s2 and s3 are queued, s2 plays
+        app.view = View::Queue;
+        app.queue.jump_to(0);
+        app.queue_pin = Some(1);
+
+        let text = rendered_text(&app, 100, 24);
+
+        assert!(
+            text.contains("▶ Kid A"),
+            "the track that is playing keeps its play mark: {text}"
+        );
+        assert!(
+            text.contains("› The National Anthem"),
+            "the cursor has a mark of its own: {text}"
+        );
+        assert!(
+            text.contains("next") && text.contains("The National Anthem"),
+            "what plays next follows the playing row, not the cursor: {text}"
+        );
     }
 
     #[test]

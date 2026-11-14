@@ -442,6 +442,10 @@ pub struct App {
     pub scroll: usize,
     pub detail: Option<Album>,
     pub detail_selected: usize,
+    /// Where the queue cursor sits, as a playback-order row. `None` follows the
+    /// track that is playing; moving the cursor pins it where you put it, so
+    /// browsing the queue never changes what is playing or what plays next.
+    pub queue_pin: Option<usize>,
 
     pub now: NowPlaying,
     pub status: Option<Status>,
@@ -532,6 +536,7 @@ impl App {
             scroll: 0,
             detail: None,
             detail_selected: 0,
+            queue_pin: None,
             now: NowPlaying::default(),
             status: None,
             should_quit: false,
@@ -1085,6 +1090,19 @@ impl App {
         self.play_current();
     }
 
+    /// Where the queue cursor sits: the row you moved to, or the track that is
+    /// playing when you have not moved it.
+    pub fn queue_cursor(&self) -> usize {
+        match self.queue.len() {
+            0 => 0,
+            len => self
+                .queue_pin
+                .or_else(|| self.queue.position())
+                .unwrap_or(0)
+                .min(len - 1),
+        }
+    }
+
     pub fn play_current(&mut self) {
         let Some(_) = self.queue.current() else {
             return;
@@ -1110,6 +1128,10 @@ impl App {
         let _ = self.player.play();
         self.now.playlist_base = base;
         self.now.playlist_len = window.len();
+        // A track now plays, so the queue cursor goes back to following it:
+        // the row you were browsing was a question about what to play, and it
+        // has been answered.
+        self.queue_pin = None;
         self.adopt_current();
 
         // A restored session resumes where it left off, once the stream is
@@ -1495,6 +1517,10 @@ impl App {
     /// Move to a top-level view from the rail: the back stack resets, because
     /// the rail is navigation, not a drill-down.
     pub fn jump_to_view(&mut self, view: View) {
+        if view == View::Queue {
+            // Opening the queue shows where you are, not where you last looked.
+            self.queue_pin = None;
+        }
         if self.view != view {
             self.view = view;
             self.needs_clear = true;
@@ -1783,7 +1809,7 @@ impl App {
                 ArtistPane::Biography => self.artist_bio_scroll,
             },
             View::Favorites => self.favorite_selected,
-            View::Queue => self.queue.position().unwrap_or(0),
+            View::Queue => self.queue_cursor(),
             View::ListenLater => self.listen_selected,
             View::Playlists => self.playlist_selected,
             View::PlaylistDetail => self.playlist_selected,
@@ -1838,9 +1864,7 @@ impl App {
                 ArtistPane::Biography => self.artist_bio_scroll = next,
             },
             View::Favorites => self.favorite_selected = next,
-            View::Queue => {
-                self.queue.jump_to(next);
-            }
+            View::Queue => self.queue_pin = Some(next),
             View::ListenLater => self.listen_selected = next,
             View::Playlists | View::PlaylistDetail => self.playlist_selected = next,
             View::Search => self.search.selected = next,
@@ -1867,9 +1891,7 @@ impl App {
                 ArtistPane::Biography => self.artist_bio_scroll = next,
             },
             View::Favorites => self.favorite_selected = next,
-            View::Queue => {
-                self.queue.jump_to(next);
-            }
+            View::Queue => self.queue_pin = Some(next),
             View::ListenLater => self.listen_selected = next,
             View::Playlists | View::PlaylistDetail => self.playlist_selected = next,
             View::Search => self.search.selected = next,
@@ -1892,7 +1914,11 @@ impl App {
                 self.play_track_from_album(self.detail_selected);
             }
             View::Queue => {
-                self.play_current();
+                // Enter plays from the cursor, which is not the same row as the
+                // one playing: selecting in the queue must not change playback.
+                if self.queue.jump_to(self.queue_cursor()).is_some() {
+                    self.play_current();
+                }
             }
             View::ListenLater => {
                 if let Some(album) = self.listen_albums.get(self.listen_selected).cloned() {
@@ -2994,6 +3020,82 @@ mod tests {
         app.handle_key(key(KeyCode::Char('w')));
         let status = app.status.as_ref().expect("a message");
         assert!(status.text.contains("no wall"), "{}", status.text);
+    }
+
+    // ------------------------------------------------------------ queue cursor
+
+    #[test]
+    fn moving_in_the_queue_does_not_change_what_plays() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b"), track("c")]);
+        app.play_current();
+        app.view = View::Queue;
+
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('j')));
+
+        assert_eq!(app.queue_cursor(), 2, "the cursor went where it was told");
+        assert_eq!(
+            app.queue.position(),
+            Some(0),
+            "browsing the queue must not move playback"
+        );
+        assert_eq!(
+            app.now.track.as_ref().map(|t| t.id.as_str()),
+            Some("a"),
+            "and what is playing stays playing"
+        );
+    }
+
+    #[test]
+    fn enter_in_the_queue_starts_the_row_under_the_cursor() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b"), track("c")]);
+        app.play_current();
+        app.view = View::Queue;
+        app.handle_key(key(KeyCode::Char('j')));
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert_eq!(app.queue.position(), Some(1));
+        assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("b"));
+        assert_eq!(
+            app.queue_cursor(),
+            1,
+            "after Enter the cursor follows the track it started"
+        );
+    }
+
+    #[test]
+    fn opening_the_queue_shows_the_track_that_is_playing() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b")]);
+        app.play_current();
+        app.view = View::Queue;
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.queue_cursor(), 0);
+
+        app.jump_to_view(View::Albums);
+        app.jump_to_view(View::Queue);
+
+        assert_eq!(app.queue_cursor(), 0, "back on the playing row");
+    }
+
+    #[test]
+    fn a_skipped_track_takes_the_cursor_with_it() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b")]);
+        app.play_current();
+        app.view = View::Queue;
+
+        app.next_track();
+
+        assert_eq!(app.queue.position(), Some(1));
+        assert_eq!(app.queue_cursor(), 1);
     }
 
     #[test]
