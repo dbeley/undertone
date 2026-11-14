@@ -251,20 +251,23 @@ password = "..."
 
 scrobble = true
 auto_dj = true
-start_view = "random"
 
 [art]
 mode = "auto"        # auto | sixel | kitty | symbols | off
 thumb_colors = 16
 cover_colors = 240
 cache_mb = 20
+backdrop = "#000000"
 
 [player]
 mpv = "mpv"
 transcode = "never"  # never | mp3-192
 ```
 
-Password precedence: CLI flag → `password_cmd` → `password` → prompt. File mode 0600 enforced with a warning if not.
+The full annotated example lives in the README, and a test parses it so the two
+cannot drift. Password precedence: `password_cmd` → `UNDERTONE_PASSWORD` →
+`password`; there is no password flag and no prompt, and nothing checks the
+file's mode — keep it out of `/etc` unless the whole machine may read it.
 
 ### Feature map — Covertone → Undertone
 

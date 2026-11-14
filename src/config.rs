@@ -324,6 +324,35 @@ transcode = "mp3-192"
     }
 
     #[test]
+    fn the_readme_example_is_a_config_the_app_accepts() {
+        // The README documents every key; if the example stops parsing, or a
+        // rename lands in the code and not the docs, this fails instead of a
+        // user finding out at startup.
+        let readme = include_str!("../README.md");
+        let server_line = "server   = \"https://music.example.org\"";
+        let start = readme.find(server_line).expect("the README has an example");
+        let end = start + readme[start..].find("\n```").expect("a closing fence");
+        let config =
+            Config::parse(&readme[start..end], Path::new("README.md")).expect("the example parses");
+
+        assert_eq!(config.server.as_deref(), Some("https://music.example.org"));
+        assert_eq!(config.username.as_deref(), Some("david"));
+        assert!(
+            config.password_cmd.is_some(),
+            "the example shows password_cmd"
+        );
+        assert_eq!(config.scrobble, Some(true));
+        assert_eq!(config.auto_dj, Some(true));
+        assert_eq!(config.art.mode, "auto");
+        assert_eq!(config.art.thumb_colors, 16);
+        assert_eq!(config.art.cover_colors, 240);
+        assert_eq!(config.art.cache_mb, 20);
+        assert_eq!(config.art.backdrop, "#000000");
+        assert_eq!(config.player.mpv, "mpv");
+        assert_eq!(config.player.transcode, "never");
+    }
+
+    #[test]
     fn a_minimal_config_gets_sensible_defaults() {
         let config = Config::parse("server = \"https://x\"\n", Path::new("t")).unwrap();
         assert_eq!(config.art.mode, "auto");
