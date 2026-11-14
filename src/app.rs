@@ -1442,10 +1442,15 @@ impl App {
                 self.now.duration = duration;
                 self.needs_redraw = true;
             }
-            PlayerEvent::Paused(paused) => {
+            // A player that has just started reports its own initial state
+            // (`pause=no`) before anything is loaded. Believing it would
+            // un-pause a restored track that is meant to sit still until you
+            // ask for sound.
+            PlayerEvent::Paused(paused) if self.now.loaded => {
                 self.now.paused = paused;
                 self.needs_redraw = true;
             }
+            PlayerEvent::Paused(_) => {}
             // mpv moved on by itself: this is the gapless transition.
             PlayerEvent::PlaylistPos(index) => self.follow_playlist(index),
             // With a window loaded, mpv reports the end of *each* entry and then
@@ -1458,6 +1463,12 @@ impl App {
                 if matches!(reason, EndReason::Error | EndReason::Redirect) {
                     self.error("track failed to play — skipping to the next");
                 }
+            }
+            PlayerEvent::Idle if !self.now.loaded => {
+                // mpv is spawned idle and says so before anything is loaded.
+                // That idle is not the end of a queue: acting on it would
+                // start playing on launch, which is exactly what a restored
+                // session promises not to do.
             }
             PlayerEvent::Idle => self.on_playlist_finished(),
             PlayerEvent::Crashed(message) => {
@@ -2899,6 +2910,73 @@ mod tests {
         // without bound and reorder what the user asked for.
         assert_eq!(app.queue.len(), 1);
         assert!(app.auto_dj_seed.is_none(), "and it must not even ask");
+    }
+
+    #[test]
+    fn a_startup_idle_from_the_player_does_not_start_playing() {
+        // mpv is spawned with `--idle=yes`, so the first thing it reports is
+        // that it is idle. Treating that as the end of a queue made the app
+        // start playing on launch, and even step past the restored track.
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.restore_session(&Session {
+            queue: vec![track("a"), track("b"), track("c")],
+            position: 0,
+            volume: None,
+            seconds: 12.0,
+            ..Default::default()
+        });
+
+        app.on_player_event(PlayerEvent::Idle);
+
+        assert_eq!(app.queue.position(), Some(0), "the cursor must not move");
+        assert!(!app.now.loaded, "nothing was loaded");
+        assert!(app.now.paused, "and nothing starts on its own");
+        assert_eq!(
+            app.now.position, 12.0,
+            "the restored position is still the one shown"
+        );
+        assert_eq!(
+            app.now.track.as_ref().map(|t| t.id.as_str()),
+            Some("a"),
+            "and the bar still names the track that was restored"
+        );
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("restored"), "{}", status.text);
+    }
+
+    #[test]
+    fn the_players_initial_pause_state_does_not_override_a_restored_one() {
+        let mut app = app();
+        app.restore_session(&Session {
+            queue: vec![track("a")],
+            position: 0,
+            volume: None,
+            seconds: 30.0,
+            ..Default::default()
+        });
+
+        // A fresh mpv reports `pause=no`, which would draw a play marker over
+        // a track that is not playing.
+        app.on_player_event(PlayerEvent::Paused(false));
+
+        assert!(app.now.paused, "a restored track stays paused");
+    }
+
+    #[test]
+    fn an_idle_after_playback_still_advances_the_queue() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b")]);
+        app.play_current();
+
+        app.on_player_event(PlayerEvent::Idle);
+
+        assert_eq!(
+            app.now.track.as_ref().map(|t| t.id.as_str()),
+            Some("b"),
+            "the real end of a track still moves on"
+        );
     }
 
     #[test]
