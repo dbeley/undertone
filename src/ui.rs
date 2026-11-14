@@ -17,13 +17,10 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use crate::app::{
-    AlbumLayout, App, ArtistLeft, ArtistPane, View, GRID_THUMB_H, GRID_THUMB_W, GRID_TILE_H,
-    GRID_TILE_W, ROW_HEIGHT, THUMB_CELLS, THUMB_ROWS,
-};
+use crate::app::{AlbumLayout, App, ArtistLeft, ArtistPane, View, ROW_HEIGHT};
 use crate::art::ArtService;
 use crate::render::{
-    blank_sixel, kitty_delete, kitty_id, ArtProtocol, FramePlan, PaintOp, Placement,
+    blank_sixel, kitty_delete, kitty_id, ArtProtocol, CellSize, FramePlan, PaintOp, Placement,
 };
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -44,6 +41,11 @@ fn selected_style() -> Style {
 /// Rows the bottom bar occupies, top border included: a title line and a
 /// progress line for the track, state and keys, then the queue preview.
 pub const BAR_HEIGHT: u16 = 5;
+
+/// The album page's cover: as wide as this, and never taller than the block
+/// of text beside it.
+const COVER_W: u16 = 20;
+const COVER_SPACE_H: u16 = 9;
 
 /// Width of the navigation rail, and the narrowest window that keeps it.
 pub const SIDEBAR_W: u16 = 12;
@@ -215,7 +217,6 @@ pub fn collect_placements(app: &mut App, area: Rect) {
     match app.view {
         View::Albums => {
             app.ensure_visible(main.width, main.height);
-            let colors = app.settings.thumb_colors;
             match app.layout {
                 AlbumLayout::List => {
                     let visible = visible_albums(main);
@@ -227,32 +228,12 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                     collect_list_placements(app, main, &covers, app.scroll, app.selected + visible);
                 }
                 AlbumLayout::Grid => {
-                    let cols = app.grid_columns(main.width).max(1) as u16;
-                    let tile_rows = (main.height / GRID_TILE_H).max(1);
-                    let per_page = usize::from(cols * tile_rows);
-                    for slot in 0..per_page {
-                        let index = app.scroll + slot;
-                        let Some(album) = app.albums.get(index) else {
-                            break;
-                        };
-                        let Some(cover) = album.cover_art.as_deref() else {
-                            continue;
-                        };
-                        let x = main.x + (slot as u16 % cols) * GRID_TILE_W;
-                        let y = main.y + (slot as u16 / cols) * GRID_TILE_H;
-                        let key = app.art.request(
-                            cover,
-                            u32::from(GRID_THUMB_W),
-                            u32::from(GRID_THUMB_H),
-                            colors,
-                            index >= app.selected + per_page,
-                        );
-                        if !app.art.is_ready(&key) {
-                            continue;
-                        }
-                        app.placements
-                            .push(Placement::new(key, y, x, GRID_THUMB_H, GRID_THUMB_W));
-                    }
+                    let covers: Vec<Option<String>> = app
+                        .albums
+                        .iter()
+                        .map(|album| album.cover_art.clone())
+                        .collect();
+                    collect_grid_placements(app, main, &covers, app.scroll, app.selected);
                 }
             }
         }
@@ -260,10 +241,15 @@ pub fn collect_placements(app: &mut App, area: Rect) {
             if let Some(album) = app.detail.as_ref() {
                 if let Some(cover) = album.cover_art.as_deref() {
                     let colors = app.settings.cover_colors;
-                    let key = app.art.request(cover, 20, 8, colors, false);
+                    // The cover's column, as draw_album_detail lays it out: the
+                    // information sits one cell to its right.
+                    let thumb = app.square_thumb(COVER_W, main.height.min(COVER_SPACE_H));
+                    let key = app
+                        .art
+                        .request(cover, thumb.art_cols, thumb.art_rows, colors, false);
                     if app.art.is_ready(&key) {
                         app.placements
-                            .push(Placement::new(key, main.y, main.x, 8, 20));
+                            .push(Placement::new(key, main.y, main.x, thumb.rows, thumb.cols));
                     }
                 }
             }
@@ -381,9 +367,8 @@ fn collect_grid_placements(
     scroll: usize,
     selected: usize,
 ) {
-    let cols = app.grid_columns(main.width).max(1) as u16;
-    let tile_rows = (main.height / GRID_TILE_H).max(1);
-    let per_page = usize::from(cols * tile_rows);
+    let wall = app.wall(main.width, main.height);
+    let per_page = wall.per_page();
     for slot in 0..per_page {
         let index = scroll + slot;
         if index >= covers.len() {
@@ -394,18 +379,25 @@ fn collect_grid_placements(
         };
         let key = app.art.request(
             cover,
-            u32::from(GRID_THUMB_W),
-            u32::from(GRID_THUMB_H),
+            wall.thumb.art_cols,
+            wall.thumb.art_rows,
             app.settings.thumb_colors,
-            index > selected + per_page,
+            index >= selected + per_page,
         );
         if !app.art.is_ready(&key) {
             continue;
         }
-        let x = main.x + (slot as u16 % cols) * GRID_TILE_W;
-        let y = main.y + (slot as u16 / cols) * GRID_TILE_H;
-        app.placements
-            .push(Placement::new(key, y, x, GRID_THUMB_H, GRID_THUMB_W));
+        let (y, x) = wall.cover_offset(slot);
+        if y + wall.thumb.rows > main.height {
+            break;
+        }
+        app.placements.push(Placement::new(
+            key,
+            main.y + y,
+            main.x + x,
+            wall.thumb.rows,
+            wall.thumb.cols,
+        ));
     }
 }
 
@@ -421,6 +413,7 @@ fn collect_list_placements(
     prefetch_from: usize,
 ) {
     let visible = visible_albums(main);
+    let thumb = app.list_thumb();
     for slot in 0..visible {
         let index = scroll + slot;
         if index >= covers.len() {
@@ -431,8 +424,8 @@ fn collect_list_placements(
         };
         let key = app.art.request(
             cover,
-            u32::from(THUMB_CELLS),
-            u32::from(THUMB_ROWS),
+            thumb.art_cols,
+            thumb.art_rows,
             app.settings.thumb_colors,
             index >= prefetch_from,
         );
@@ -446,8 +439,8 @@ fn collect_list_placements(
             key,
             main.y + slot as u16 * ROW_HEIGHT,
             main.x,
-            THUMB_ROWS,
-            THUMB_CELLS,
+            thumb.rows,
+            thumb.cols,
         ));
     }
 }
@@ -457,6 +450,7 @@ pub fn emit_erases(
     plan: &FramePlan,
     protocol: ArtProtocol,
     backdrop: [u8; 3],
+    cell: CellSize,
 ) -> io::Result<()> {
     for op in &plan.erases {
         if let PaintOp::Erase {
@@ -477,10 +471,14 @@ pub fn emit_erases(
             match protocol {
                 // No delete under sixel: paint a solid rectangle over it.
                 ArtProtocol::Sixel => {
+                    // The blank covers the whole slot in real pixels: an image
+                    // is drawn at its own pixel size, so a cell-sized blank
+                    // would leave a rim of the old cover behind.
+                    let (width, height) = cell.pixels_for(*cols, *rows);
                     queue!(terminal.backend_mut(), MoveTo(*col, *row))?;
                     terminal
                         .backend_mut()
-                        .write_all(&blank_sixel(*rows, *cols, backdrop))?;
+                        .write_all(&blank_sixel(width, height, backdrop))?;
                 }
                 ArtProtocol::Kitty => {
                     if let Some(key) = key {
@@ -809,10 +807,11 @@ fn draw_row(
     let row = album_row_rect(area, slot);
     let has_art = draw_row_thumb(frame, app, row, cover);
 
+    let gutter = app.list_thumb().cols + 1;
     let text_area = Rect {
-        x: row.x + THUMB_CELLS + 1,
+        x: row.x + gutter,
         y: row.y,
-        width: row.width.saturating_sub(THUMB_CELLS + 1),
+        width: row.width.saturating_sub(gutter),
         height: ROW_HEIGHT,
     };
     let prefix = if starred { "★ " } else { "" };
@@ -851,11 +850,12 @@ fn draw_row(
 
 /// The thumbnail for one row, or its placeholder. Returns whether art is ready.
 fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) -> bool {
+    let thumb = app.list_thumb();
     let thumb_key = cover.map(|cover| {
         ArtService::key(
             cover,
-            u32::from(THUMB_CELLS),
-            u32::from(THUMB_ROWS),
+            thumb.art_cols,
+            thumb.art_rows,
             app.settings.thumb_colors,
             app.protocol,
         )
@@ -867,8 +867,8 @@ fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) 
     let slot = Rect {
         x: row.x,
         y: row.y,
-        width: THUMB_CELLS,
-        height: THUMB_ROWS,
+        width: thumb.cols,
+        height: thumb.rows,
     };
     if has_art {
         if let Some(key) = thumb_key.as_deref() {
@@ -1351,24 +1351,27 @@ fn draw_wall(
     selected: usize,
     scroll: usize,
 ) {
-    let cols = app.grid_columns(area.width).max(1) as u16;
-    let tile_rows = (area.height / GRID_TILE_H).max(1);
-    let per_page = usize::from(cols * tile_rows);
+    let wall = app.wall(area.width, area.height);
+    let size = wall.thumb;
 
-    for slot in 0..per_page {
+    for slot in 0..wall.per_page() {
         let index = scroll + slot;
         let Some(tile) = tiles.get(index) else {
             break;
         };
         let is_selected = index == selected;
-        let x = area.x + (slot as u16 % cols) * GRID_TILE_W;
-        let y = area.y + (slot as u16 / cols) * GRID_TILE_H;
+        if wall.offset(slot).0 + wall.thumb.rows > area.height {
+            break;
+        }
+        let (dy, dx) = wall.cover_offset(slot);
+        let x = area.x + dx;
+        let y = area.y + dy;
 
         let thumb_key = tile.cover.map(|cover| {
             ArtService::key(
                 cover,
-                u32::from(GRID_THUMB_W),
-                u32::from(GRID_THUMB_H),
+                size.art_cols,
+                size.art_rows,
                 app.settings.thumb_colors,
                 app.protocol,
             )
@@ -1380,8 +1383,8 @@ fn draw_wall(
         let thumb = Rect {
             x,
             y,
-            width: GRID_THUMB_W,
-            height: GRID_THUMB_H,
+            width: size.cols,
+            height: size.rows,
         };
         if has_art {
             if let Some(key) = thumb_key.as_deref() {
@@ -1404,9 +1407,9 @@ fn draw_wall(
                 Style::default().fg(MUTED)
             }),
             Rect {
-                x,
-                y: y + GRID_THUMB_H,
-                width: GRID_THUMB_W,
+                x: area.x + wall.offset(slot).1,
+                y: y + size.rows,
+                width: wall.label_w(),
                 height: 1,
             },
         );
@@ -1432,7 +1435,7 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let header = Rect {
-        height: area.height.min(9),
+        height: area.height.min(COVER_SPACE_H),
         ..area
     };
     let body = Rect {
@@ -1441,8 +1444,11 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
         ..area
     };
 
-    let info_x = area.x + 21;
-    let info_width = area.width.saturating_sub(22);
+    // The cover is sized the same way as everywhere else, so the information
+    // sits beside whatever width the square actually took.
+    let cover = app.square_thumb(COVER_W, header.height);
+    let info_x = area.x + cover.cols + 1;
+    let info_width = area.width.saturating_sub(cover.cols + 2);
     let info = Rect {
         x: info_x,
         y: area.y,
@@ -2086,6 +2092,7 @@ pub fn format_duration(seconds: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Thumb;
 
     #[test]
     fn durations_format_as_minutes_and_seconds() {
@@ -2164,6 +2171,11 @@ mod tests {
             Box::new(NullPlayer::new()),
             art,
             protocol,
+            // A plain 8x17 cell: the fallback, and what most desktops report.
+            crate::render::CellSize {
+                width: 8,
+                height: 17,
+            },
             70,
             fresh_listen_later(),
         )
@@ -2188,6 +2200,13 @@ mod tests {
             cover_art: Some(format!("al-{id}_cover")),
             ..Default::default()
         }
+    }
+
+    /// The thumbnail a wall draws in this area, so a test can warm the blobs
+    /// at the size the layout will actually ask for.
+    fn wall_thumb(app: &App, area: Rect) -> Thumb {
+        let body = shell_layout(area).body;
+        app.wall(body.width, body.height).thumb
     }
 
     /// Pretend every album's thumbnail has finished rendering.
@@ -2228,7 +2247,8 @@ mod tests {
     fn switching_views_erases_previously_painted_art() {
         let mut app = test_app(ArtProtocol::Sixel);
         app.albums = vec![album_with_cover("a"), album_with_cover("b")];
-        warm_art(&mut app, u32::from(THUMB_CELLS), u32::from(THUMB_ROWS));
+        let thumb = app.list_thumb();
+        warm_art(&mut app, thumb.art_cols, thumb.art_rows);
         let area = Rect::new(0, 0, 100, 30);
 
         collect_placements(&mut app, area);
@@ -2249,7 +2269,8 @@ mod tests {
     fn going_back_to_albums_repaints_the_thumbnails() {
         let mut app = test_app(ArtProtocol::Sixel);
         app.albums = vec![album_with_cover("a")];
-        warm_art(&mut app, u32::from(THUMB_CELLS), u32::from(THUMB_ROWS));
+        let thumb = app.list_thumb();
+        warm_art(&mut app, thumb.art_cols, thumb.art_rows);
         let area = Rect::new(0, 0, 100, 30);
 
         collect_placements(&mut app, area);
@@ -2270,8 +2291,9 @@ mod tests {
         let mut app = test_app(ArtProtocol::Sixel);
         app.layout = AlbumLayout::Grid;
         app.albums = (0..12).map(|i| album_with_cover(&i.to_string())).collect();
-        warm_art(&mut app, u32::from(GRID_THUMB_W), u32::from(GRID_THUMB_H));
         let area = Rect::new(0, 0, 100, 30);
+        let thumb = wall_thumb(&app, area);
+        warm_art(&mut app, thumb.art_cols, thumb.art_rows);
 
         collect_placements(&mut app, area);
         assert_eq!(app.placements.len(), 12);
@@ -2287,6 +2309,73 @@ mod tests {
                 assert!(!a.intersects(b), "{a:?} overlaps {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_wall_uses_the_whole_body_of_a_small_screen() {
+        // The device this was tuned on: 115x25 cells of 16x41 pixels. The body
+        // is 101x19, which used to hold two rows of covers and a blank band.
+        let mut app = test_app(ArtProtocol::Sixel);
+        app.cell = CellSize {
+            width: 16,
+            height: 41,
+        };
+        app.layout = AlbumLayout::Grid;
+        app.albums = (0..24).map(|i| album_with_cover(&i.to_string())).collect();
+        let area = Rect::new(0, 0, 115, 25);
+        let thumb = wall_thumb(&app, area);
+        warm_art(&mut app, thumb.art_cols, thumb.art_rows);
+
+        collect_placements(&mut app, area);
+        assert_eq!(app.placements.len(), 21, "three rows of seven covers");
+
+        let body = shell_layout(area).body;
+        for placement in &app.placements {
+            assert!(
+                placement.row + placement.rows <= body.y + body.height,
+                "{placement:?} runs past the body"
+            );
+            assert!(placement.col + placement.cols <= body.x + body.width);
+        }
+        let lowest = app
+            .placements
+            .iter()
+            .map(|placement| placement.row + placement.rows)
+            .max()
+            .expect("placements");
+        assert!(
+            body.y + body.height - lowest < thumb.rows,
+            "the last row of covers reaches the bottom of the body"
+        );
+    }
+
+    #[test]
+    fn a_placement_asks_for_the_art_it_paints() {
+        // The placement's cell rectangle and the size it was rendered for have
+        // to agree: the painter reserves the first and the blob fills it.
+        let mut app = test_app(ArtProtocol::Sixel);
+        app.cell = CellSize {
+            width: 16,
+            height: 41,
+        };
+        let thumb = app.list_thumb();
+        app.albums = vec![album_with_cover("a")];
+        warm_art(&mut app, thumb.art_cols, thumb.art_rows);
+
+        collect_placements(&mut app, Rect::new(0, 0, 115, 25));
+        let placement = app.placements.first().expect("one cover");
+        assert_eq!((placement.cols, placement.rows), (thumb.cols, thumb.rows));
+        assert_eq!(
+            placement.key,
+            ArtService::key(
+                "al-a_cover",
+                thumb.art_cols,
+                thumb.art_rows,
+                16,
+                ArtProtocol::Sixel
+            ),
+            "the key names the size draw_row_thumb looks for"
+        );
     }
 
     #[test]

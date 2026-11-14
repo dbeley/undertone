@@ -13,7 +13,7 @@ use undertone::app::App;
 use undertone::art::ArtService;
 use undertone::config::Settings;
 use undertone::player::{MpvOptions, MpvPlayer, NullPlayer};
-use undertone::render::ArtProtocol;
+use undertone::render::{ArtProtocol, CellSize};
 use undertone::subsonic::{SubsonicClient, SubsonicConfig, SubsonicError};
 
 /// A server that answers every request with the same fixed body.
@@ -77,6 +77,7 @@ fn app_for(server: &str) -> App {
         Box::new(NullPlayer::new()),
         art,
         ArtProtocol::Off,
+        CellSize::FALLBACK,
         70,
         undertone::listen_later::ListenLater::load(dir.join("ll.json")),
     )

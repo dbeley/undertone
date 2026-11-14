@@ -30,11 +30,12 @@ pub const MAX_BATCH: usize = 4;
 
 /// Pixels fetched from the server, once per cover.
 ///
-/// One size for every view: a detail cover is 20x8 cells = 200x160 px, which
-/// is the largest thing we draw. Fetching per-view sizes meant switching
-/// layouts refetched every cover; one size keeps a single image per album and
-/// lets chafa downscale for the smaller renders.
-pub const IMAGE_PX: u32 = 200;
+/// One size for every view: an album page's cover is 20 cells wide by nine
+/// tall, which on a 16x41 cell (the Pocket Reform) is a 320x320 square — the
+/// largest thing we draw. Fetching per-view sizes meant switching layouts
+/// refetched every cover; one size keeps a single image per album and lets
+/// chafa downscale for the smaller renders.
+pub const IMAGE_PX: u32 = 320;
 
 /// How many covers to fetch at once. Encoding stays single-threaded; network
 /// wait is what benefits from concurrency.

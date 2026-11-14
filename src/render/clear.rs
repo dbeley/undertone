@@ -13,17 +13,17 @@
 //! * kitty can delete by image id, but chafa does not set one, so ids are
 //!   injected into the blob when it is cached and the same id is deleted later.
 
-/// chafa's sixel geometry: one character cell is ten by twenty pixels.
-const CELL_W: u32 = 10;
-const CELL_H: u32 = 20;
-
-/// A solid sixel covering `cols` x `rows` cells.
+/// A solid sixel covering `width` x `height` pixels.
 ///
 /// Painted instead of deleted: sixel has no delete operation, and a full-rect
 /// opaque image is both the cheapest and the most portable way to clear one.
-pub fn blank_sixel(rows: u16, cols: u16, rgb: [u8; 3]) -> Vec<u8> {
-    let width = u32::from(cols.max(1)) * CELL_W;
-    let height = u32::from(rows.max(1)) * CELL_H;
+///
+/// The size is in pixels, not cells, because the image being covered was
+/// sized in pixels too: a blank of the wrong size leaves a rim of the old
+/// cover behind.
+pub fn blank_sixel(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let width = width.max(1);
+    let height = height.max(1);
     let bands = height.div_ceil(6);
 
     let mut out = Vec::with_capacity(64 + bands as usize * 8);
@@ -107,11 +107,10 @@ mod tests {
 
     #[test]
     fn a_blank_sixel_is_well_formed_and_covers_the_rectangle() {
-        let bytes = blank_sixel(2, 4, [0, 0, 0]);
+        let bytes = blank_sixel(40, 40, [0, 0, 0]);
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.starts_with("\x1bP0;1;0q"));
         assert!(text.ends_with("\x1b\\"));
-        // Four cells wide is forty pixels.
         assert!(text.contains("\"1;1;40;40"), "{text}");
         // Forty pixels tall is seven bands of six.
         assert_eq!(text.matches('~').count(), 7);
@@ -124,9 +123,9 @@ mod tests {
 
     #[test]
     fn backdrop_colour_is_encoded_as_sixel_percentages() {
-        let white = String::from_utf8_lossy(&blank_sixel(1, 1, [255, 255, 255])).to_string();
+        let white = String::from_utf8_lossy(&blank_sixel(10, 20, [255, 255, 255])).to_string();
         assert!(white.contains("#0;2;100;100;100"));
-        let mid = String::from_utf8_lossy(&blank_sixel(1, 1, [128, 0, 0])).to_string();
+        let mid = String::from_utf8_lossy(&blank_sixel(10, 20, [128, 0, 0])).to_string();
         assert!(mid.contains("#0;2;50;0;0"), "{mid}");
     }
 

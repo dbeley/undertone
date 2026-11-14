@@ -15,21 +15,114 @@ use crate::player::{
     EndReason, LoadMode, Player, PlayerEvent, ScrobbleAction, Scrobbler, Seek, TrackSource,
 };
 use crate::queue::{Queue, QueueItem, Repeat, Step};
-use crate::render::{ArtProtocol, Painter, Placement};
+use crate::render::{ArtProtocol, CellSize, Painter, Placement};
 use crate::session::Session;
 use crate::subsonic::{
     Album, AlbumListQuery, AlbumListType, Artist, ArtistDetail, ArtistInfo, Playlist, Song,
     SubsonicClient,
 };
 
-/// Cells a thumbnail occupies in the album list.
-///
-/// Six by three cells is 60x60 pixels at chafa's 10x20 cell grid: square, which
-/// is what a cover wants, and large enough to recognise on a small terminal.
-pub const THUMB_CELLS: u16 = 6;
-pub const THUMB_ROWS: u16 = 3;
-/// Rows of text per album entry.
+/// Rows of text per album entry: title, subtitle, and the track count.
 pub const ROW_HEIGHT: u16 = 3;
+
+/// The wall's target tile, in cells.
+///
+/// A target, not a size: the wall fits as many whole tiles as it can by these,
+/// then stretches every tile to fill the space it was given. Half a row of
+/// covers is worse than three rows of slightly taller ones, and a blank band
+/// at the bottom of the screen is worse than both.
+pub const WALL_TILE_W: u16 = 14;
+pub const WALL_TILE_H: u16 = 6;
+/// Air between a cover and the next tile, and the line of text under it.
+const TILE_GAP: u16 = 1;
+const TILE_LABEL: u16 = 1;
+
+/// One thumbnail on screen: the cells it occupies, and the box to render into.
+///
+/// The two are not the same size. chafa measures its output in cells of 10x20
+/// pixels, but a terminal cell is whatever the font makes it — 16x41 on the
+/// Pocket Reform. Images are drawn at their own pixel size, so asking for a
+/// `6x3` chafa box put a 60x60 image inside a 96x123 slot: a cover using half
+/// of the space reserved for it. Sizing the chafa box in real pixels is what
+/// makes a thumbnail fill its tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Thumb {
+    /// Cells reserved on screen.
+    pub cols: u16,
+    pub rows: u16,
+    /// `--size` for chafa, in chafa's own 10x20 cells.
+    pub art_cols: u32,
+    pub art_rows: u32,
+}
+
+/// The wall one area holds: how many tiles fit, and how big each one is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wall {
+    pub cols: usize,
+    pub rows: usize,
+    pub thumb: Thumb,
+    /// Tile pitch: a cover plus the air after it.
+    pub tile_w: u16,
+    pub tile_h: u16,
+    /// Air on each side of a cover that is narrower than its tile, which is
+    /// what keeps symbol art centred instead of shoved left.
+    pad_x: u16,
+    /// Cells left over once the tiles are placed, handed out between them so
+    /// the wall ends where the window does.
+    pub spare_w: u16,
+    pub spare_h: u16,
+}
+
+impl Wall {
+    /// Tiles on one screen.
+    pub fn per_page(&self) -> usize {
+        self.cols * self.rows
+    }
+
+    /// Where tile `slot` starts, as an offset from the area's top-left corner.
+    /// The label under a cover runs the width of the tile from here.
+    pub fn offset(&self, slot: usize) -> (u16, u16) {
+        let cols = self.cols.max(1);
+        let row = slot / cols;
+        let col = slot % cols;
+        let x = col as u16 * self.tile_w + spread(self.spare_w, self.cols, col);
+        let y = row as u16 * self.tile_h + spread(self.spare_h, self.rows, row);
+        (y, x)
+    }
+
+    /// Where the cover inside tile `slot` starts: the tile, plus the air that
+    /// centres a cover narrower than the tile.
+    pub fn cover_offset(&self, slot: usize) -> (u16, u16) {
+        let (y, x) = self.offset(slot);
+        (y, x + self.pad_x)
+    }
+
+    /// Room for the line of text under a cover.
+    pub fn label_w(&self) -> u16 {
+        self.tile_w.saturating_sub(TILE_GAP).max(1)
+    }
+}
+
+/// Hand out `spare` leftover cells across `count` steps, so an area that does
+/// not divide evenly still ends flush with the window.
+fn spread(spare: u16, count: usize, step: usize) -> u16 {
+    if count == 0 {
+        return 0;
+    }
+    (u32::from(spare) * step as u32 / count as u32) as u16
+}
+
+/// Cells it takes to square off `cols` cells of art, given a cell in pixels.
+fn rows_for(cols: u16, cell_w: u32, cell_h: u32) -> u16 {
+    let px = u32::from(cols) * cell_w;
+    ((px + cell_h / 2) / cell_h).max(1) as u16
+}
+
+/// Cells it takes to square off `rows` cells of art.
+fn cols_for(rows: u16, cell_w: u32, cell_h: u32) -> u16 {
+    let px = u32::from(rows) * cell_h;
+    ((px + cell_w / 2) / cell_w).max(1) as u16
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -199,12 +292,6 @@ pub enum AlbumLayout {
     Grid,
 }
 
-/// Grid geometry, in terminal cells.
-pub const GRID_TILE_W: u16 = 14;
-pub const GRID_TILE_H: u16 = 7;
-pub const GRID_THUMB_W: u16 = 12;
-pub const GRID_THUMB_H: u16 = 5;
-
 pub struct NowPlaying {
     pub track: Option<QueueItem>,
     pub position: f64,
@@ -370,6 +457,9 @@ pub struct App {
     pub placements: Vec<Placement>,
     pub last_tick: Instant,
     pub list_area: (u16, u16),
+    /// Size of one terminal cell in pixels. Art is sized in real pixels, so
+    /// this decides how much of a tile a cover fills.
+    pub cell: CellSize,
 }
 
 impl App {
@@ -380,6 +470,7 @@ impl App {
         player: Box<dyn Player>,
         art: ArtService,
         protocol: ArtProtocol,
+        cell: CellSize,
         volume: u8,
         listen_later: ListenLater,
     ) -> Self {
@@ -451,6 +542,7 @@ impl App {
             placements: Vec::new(),
             last_tick: Instant::now(),
             list_area: (80, 24),
+            cell,
         }
     }
 
@@ -1239,17 +1331,13 @@ impl App {
         if len == 0 {
             return;
         }
-        let rows = match (self.view, self.layout) {
-            (View::Albums, AlbumLayout::Grid) => {
-                let cols = self.grid_columns(self.list_area.0).max(1);
-                (usize::from(self.list_area.1) / usize::from(GRID_TILE_H)).max(1) * cols
-            }
-            (View::Albums, AlbumLayout::List) => {
-                (usize::from(self.list_area.1) / usize::from(ROW_HEIGHT)).max(1)
-            }
+        let (width, height) = self.list_area;
+        let rows = match self.layout_of(self.view) {
+            Some(AlbumLayout::Grid) => self.wall(width, height).per_page(),
+            Some(AlbumLayout::List) => list_rows(height),
             // Detail and queue rows are one line each; leave a row for the
             // view's own header so the page never overshoots the window.
-            _ => (usize::from(self.list_area.1).saturating_sub(2)).max(1),
+            None => (usize::from(height).saturating_sub(2)).max(1),
         };
         self.shift_selection(direction * rows as i32, len);
     }
@@ -1711,8 +1799,9 @@ impl App {
         }
         // In the grid, one visual row is a whole line of tiles.
         let grid = self.layout_of(self.view).unwrap_or(AlbumLayout::List);
+        let (width, height) = self.list_area;
         let step = if grid == AlbumLayout::Grid {
-            self.grid_columns(self.list_area.0).max(1) as i32
+            self.wall(width, height).cols.max(1) as i32
         } else {
             1
         };
@@ -1878,8 +1967,8 @@ impl App {
                 }
             }
             AlbumLayout::Grid => {
-                let cols = self.grid_columns(width).max(1);
-                scroll_grid(&mut self.selected, &mut self.scroll, cols, height)
+                let wall = self.wall(width, height);
+                scroll_grid(&mut self.selected, &mut self.scroll, wall.cols, wall.rows)
             }
         }
     }
@@ -1893,12 +1982,12 @@ impl App {
                 list_rows(height),
             ),
             AlbumLayout::Grid => {
-                let cols = self.grid_columns(width).max(1);
+                let wall = self.wall(width, height);
                 scroll_grid(
                     &mut self.listen_selected,
                     &mut self.listen_scroll,
-                    cols,
-                    height,
+                    wall.cols,
+                    wall.rows,
                 )
             }
         }
@@ -1913,12 +2002,12 @@ impl App {
                 list_rows(height),
             ),
             AlbumLayout::Grid => {
-                let cols = self.grid_columns(width).max(1);
+                let wall = self.wall(width, height);
                 scroll_grid(
                     &mut self.favorite_selected,
                     &mut self.favorite_scroll,
-                    cols,
-                    height,
+                    wall.cols,
+                    wall.rows,
                 )
             }
         }
@@ -1933,12 +2022,12 @@ impl App {
                 list_rows(height),
             ),
             AlbumLayout::Grid => {
-                let cols = self.grid_columns(width).max(1);
+                let wall = self.wall(width, height);
                 scroll_grid(
                     &mut self.artist_selected,
                     &mut self.artist_scroll,
-                    cols,
-                    height,
+                    wall.cols,
+                    wall.rows,
                 )
             }
         }
@@ -2047,9 +2136,76 @@ impl App {
         }
     }
 
-    /// Tiles per row for the current width.
-    pub fn grid_columns(&self, width: u16) -> usize {
-        (width / GRID_TILE_W).max(1) as usize
+    /// The size of one cell in the units art is measured in.
+    ///
+    /// Pixel protocols draw an image at its own pixel size, so that unit is
+    /// the terminal's real cell. Symbol art is characters, laid out by chafa
+    /// in its own 10x20 cell, so that is what keeps it square.
+    fn art_cell(&self) -> (u32, u32) {
+        if self.protocol.is_pixel() {
+            (self.cell.width.max(1), self.cell.height.max(1))
+        } else {
+            (10, 20)
+        }
+    }
+
+    /// The wall this area can hold.
+    pub fn wall(&self, width: u16, height: u16) -> Wall {
+        let cols = usize::from((width / WALL_TILE_W).max(1));
+        let rows = usize::from((height / WALL_TILE_H).max(1));
+        // Divide first, then let the tiles grow into the remainder: whole rows
+        // of covers that fill the screen beat fewer rows and a blank band.
+        let tile_w = (width / cols as u16).max(1);
+        let tile_h = (height / rows as u16).max(TILE_LABEL + 1);
+        let usable_w = tile_w.saturating_sub(TILE_GAP).max(1);
+        let usable_h = tile_h.saturating_sub(TILE_LABEL).max(1);
+        let thumb = self.square_thumb(usable_w, usable_h);
+        Wall {
+            cols,
+            rows,
+            thumb,
+            tile_w,
+            tile_h,
+            pad_x: usable_w.saturating_sub(thumb.cols) / 2,
+            spare_w: width.saturating_sub(cols as u16 * tile_w),
+            spare_h: height.saturating_sub(rows as u16 * tile_h),
+        }
+    }
+
+    /// The thumbnail for one list row: as tall as the row, and square.
+    pub fn list_thumb(&self) -> Thumb {
+        let (cell_w, cell_h) = self.art_cell();
+        self.square_thumb(cols_for(ROW_HEIGHT, cell_w, cell_h), ROW_HEIGHT)
+    }
+
+    /// The largest square cover that fits in this many cells.
+    ///
+    /// Width is tried first, because a wall of covers reads across, and the
+    /// height follows to keep the cover square; if that overflows, the height
+    /// wins and the width follows instead.
+    pub fn square_thumb(&self, avail_w: u16, avail_h: u16) -> Thumb {
+        let (cell_w, cell_h) = self.art_cell();
+        let avail_w = avail_w.max(1);
+        let avail_h = avail_h.max(1);
+        let mut cols = avail_w;
+        let mut rows = rows_for(cols, cell_w, cell_h);
+        if rows > avail_h {
+            rows = avail_h;
+            cols = cols_for(rows, cell_w, cell_h);
+        }
+        // chafa's box is counted in whole 20-pixel steps, and a square box is
+        // what a square cover fills exactly — no letterbox, no dead band.
+        let px = (u32::from(cols) * cell_w)
+            .min(u32::from(rows) * cell_h)
+            .max(20)
+            / 20
+            * 20;
+        Thumb {
+            cols,
+            rows,
+            art_cols: px / 10,
+            art_rows: px / 20,
+        }
     }
 }
 
@@ -2060,7 +2216,7 @@ impl App {
 /// playing one, which is enough lookahead for a slow stream to start.
 pub const PLAYLIST_WINDOW: usize = 3;
 
-/// How many list rows fit in `height`, at two lines per row.
+/// How many list rows fit in `height`, at three lines per row.
 fn list_rows(height: u16) -> usize {
     (usize::from(height) / usize::from(ROW_HEIGHT)).max(1)
 }
@@ -2075,9 +2231,9 @@ fn scroll_into_view(selected: &mut usize, scroll: &mut usize, visible: usize) {
 }
 
 /// Keep a cursor inside a grid window, in whole rows so tiles do not shift.
-fn scroll_grid(selected: &mut usize, scroll: &mut usize, cols: usize, height: u16) {
+fn scroll_grid(selected: &mut usize, scroll: &mut usize, cols: usize, visible_rows: usize) {
     let cols = cols.max(1);
-    let visible_rows = (usize::from(height) / usize::from(GRID_TILE_H)).max(1);
+    let visible_rows = visible_rows.max(1);
     let selected_row = *selected / cols;
     let first_row = *scroll / cols;
     if selected_row < first_row {
@@ -2156,6 +2312,10 @@ mod tests {
             Box::new(NullPlayer::new()),
             art,
             ArtProtocol::Off,
+            CellSize {
+                width: 8,
+                height: 17,
+            },
             70,
             fresh_listen_later(),
         )
@@ -2284,11 +2444,89 @@ mod tests {
         let mut app = app();
         app.albums = (0..60).map(|i| album(&i.to_string(), 1)).collect();
         app.layout = AlbumLayout::Grid;
-        // 96 wide fits six 14-cell tiles; 25 rows fits three 7-row tile rows.
+        // 96 wide fits six 14-cell tiles, and 25 rows fits four six-row ones:
+        // the wall divides the height by the target tile and lets the tiles
+        // grow into the rest, so a page is a whole number of rows.
         app.list_area = (96, 25);
 
         app.handle_key(ctrl(KeyCode::Char('d')));
-        assert_eq!(app.selected, 18, "one page is three rows of six");
+        assert_eq!(app.selected, 24, "one page is four rows of six");
+    }
+
+    /// The geometry the device actually runs: a 16x41 cell, as the Pocket
+    /// Reform's font reports it.
+    fn pocket_reform() -> App {
+        let mut app = app();
+        app.protocol = ArtProtocol::Sixel;
+        app.cell = CellSize {
+            width: 16,
+            height: 41,
+        };
+        app
+    }
+
+    #[test]
+    fn a_wall_spends_the_height_it_is_given() {
+        let app = pocket_reform();
+        // The body of a 115x25 terminal: 101 columns by 19 rows.
+        let wall = app.wall(101, 19);
+
+        assert_eq!((wall.cols, wall.rows), (7, 3), "three rows of seven");
+        assert_eq!(
+            wall.rows as u16 * wall.tile_h + wall.spare_h,
+            19,
+            "no band of empty rows below the wall"
+        );
+        let (last_row, _) = wall.offset(wall.per_page() - 1);
+        assert!(
+            last_row + wall.tile_h <= 19,
+            "every tile is fully inside the area"
+        );
+    }
+
+    #[test]
+    fn a_cover_fills_its_cell_slot() {
+        let app = pocket_reform();
+        let thumb = app.wall(101, 19).thumb;
+
+        // 200x200 px of art in a 13x5 cell slot, which is 208x205 px.
+        assert_eq!((thumb.art_cols, thumb.art_rows), (20, 10));
+        assert_eq!(
+            thumb.art_cols * 10,
+            thumb.art_rows * 20,
+            "a square box, so the cover is not letterboxed"
+        );
+        assert!(
+            thumb.art_cols * 10 <= u32::from(thumb.cols) * 16,
+            "and it fits"
+        );
+        assert!(thumb.art_rows * 20 <= u32::from(thumb.rows) * 41);
+        assert!(
+            thumb.art_cols * 10 * 100 / (u32::from(thumb.cols) * 16) >= 90,
+            "the cover uses its slot instead of floating in it"
+        );
+    }
+
+    #[test]
+    fn a_list_thumbnail_is_as_tall_as_its_row() {
+        let app = pocket_reform();
+        let thumb = app.list_thumb();
+
+        assert_eq!((thumb.art_cols, thumb.art_rows), (12, 6), "120x120 px");
+        assert!(thumb.rows <= ROW_HEIGHT);
+        assert!(thumb.art_rows * 20 <= u32::from(thumb.rows) * 41);
+        assert!(
+            thumb.cols + 1 < 20,
+            "the text still gets the width of the row"
+        );
+    }
+
+    #[test]
+    fn symbol_art_keeps_two_of_width_to_one_of_height() {
+        // Symbols are characters, laid out in chafa's own 10x20 cell, so a
+        // square cover is twice as wide as it is tall.
+        let wall = app().wall(101, 19);
+        assert_eq!(wall.thumb.art_cols, wall.thumb.art_rows * 2);
     }
 
     #[test]
@@ -3435,7 +3673,7 @@ mod tests {
         app.layout = AlbumLayout::Grid;
         app.list_area = (100, 30);
         app.albums = (0..40).map(|i| album(&i.to_string(), 1)).collect();
-        let cols = app.grid_columns(100);
+        let cols = app.wall(100, 30).cols;
         assert!(cols > 1);
 
         app.handle_key(key(KeyCode::Char('j')));

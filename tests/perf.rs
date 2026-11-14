@@ -22,7 +22,7 @@ use undertone::config::Settings;
 use undertone::listen_later::ListenLater;
 use undertone::player::NullPlayer;
 use undertone::queue::QueueItem;
-use undertone::render::{ArtProtocol, FramePlan, Painter, Placement};
+use undertone::render::{ArtProtocol, CellSize, FramePlan, Painter, Placement};
 use undertone::subsonic::{SubsonicClient, SubsonicConfig};
 
 fn settings(cache: std::path::PathBuf) -> Settings {
@@ -123,6 +123,10 @@ fn building_the_app_does_not_touch_the_network() {
         Box::new(NullPlayer::new()),
         art,
         ArtProtocol::Sixel,
+        CellSize {
+            width: 8,
+            height: 17,
+        },
         70,
         ListenLater::load(dir.join("ll.json")),
     );

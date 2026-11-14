@@ -13,7 +13,7 @@ use undertone::app::App;
 use undertone::art::ArtService;
 use undertone::config::Settings;
 use undertone::player::NullPlayer;
-use undertone::render::ArtProtocol;
+use undertone::render::{ArtProtocol, CellSize};
 use undertone::subsonic::{SubsonicClient, SubsonicConfig};
 
 /// Serves `getAlbumList2` from a fixed catalogue, honouring size and offset.
@@ -113,6 +113,7 @@ fn app_on(server: &FakeServer) -> App {
         Box::new(NullPlayer::default()),
         art,
         ArtProtocol::Symbols,
+        CellSize::FALLBACK,
         80,
         undertone::listen_later::ListenLater::load(
             std::env::temp_dir().join("undertone-paging-ll.json"),

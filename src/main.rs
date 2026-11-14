@@ -185,7 +185,16 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         None => ListenLater::load("/tmp/undertone-listen-later.json"),
     };
-    let mut app = App::new(client, settings, player, art, protocol, 70, listen_later);
+    let mut app = App::new(
+        client,
+        settings,
+        player,
+        art,
+        protocol,
+        Caps::detect(None).cell,
+        70,
+        listen_later,
+    );
     // Restore before the first fetch: the saved sort decides how the album
     // list is asked for, and refetching after the fact would cost a second
     // request on every start.
@@ -320,7 +329,9 @@ fn event_loop(
                 app.handle_key(key)
             }
             Some(Input::Resize) => {
-                // Placements are invalid after a resize.
+                // Placements are invalid after a resize, and a font change
+                // moves the cell pixels the art is sized against.
+                app.cell = Caps::detect(None).cell;
                 app.needs_clear = true;
                 app.needs_redraw = true;
             }
@@ -384,7 +395,13 @@ fn event_loop(
         }
 
         // Order matters: erase, draw text, then paint images over it.
-        ui::emit_erases(terminal, &plan, app.protocol, app.settings.backdrop)?;
+        ui::emit_erases(
+            terminal,
+            &plan,
+            app.protocol,
+            app.settings.backdrop,
+            app.cell,
+        )?;
         terminal.draw(|frame| ui::draw(frame, app))?;
         ui::emit_paints(terminal, &plan, &app.art)?;
     }

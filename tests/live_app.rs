@@ -12,7 +12,7 @@ use undertone::app::{App, View};
 use undertone::art::ArtService;
 use undertone::config::Settings;
 use undertone::player::NullPlayer;
-use undertone::render::ArtProtocol;
+use undertone::render::{ArtProtocol, CellSize};
 use undertone::subsonic::{SubsonicClient, SubsonicConfig};
 
 fn app() -> App {
@@ -49,6 +49,7 @@ fn app() -> App {
         Box::new(NullPlayer::new()),
         art,
         ArtProtocol::Off,
+        CellSize::FALLBACK,
         70,
         undertone::listen_later::ListenLater::load(
             std::env::temp_dir().join("undertone-live-ll.json"),
