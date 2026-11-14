@@ -4,3 +4,4 @@
 *.blob
 .envrc.local
 __pycache__/
+todo.txt
