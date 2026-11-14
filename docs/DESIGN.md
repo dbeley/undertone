@@ -220,9 +220,9 @@ album id ──► coverArt?size=N ──► 20 MB disk image cache
 
 **Symbols mode bypasses the painter.** When the selected renderer is `symbols`, art is rasterised into cells and drawn through the ratatui buffer like ordinary text — no placements, no reconciliation. The painter only manages pixel blobs, so `symbols` mode and `off` mode have no painter cost at all.
 
-**Thumbnail strategy (D8):** 2-line album rows, thumbnail target ~32–40 px, **16 colours**. Estimated 12 thumbs ≈ 11.5 KB per full repaint. Settle-paint (~80 ms debounce) during fast scrolling; immediate paint on selection change.
+**Thumbnail strategy (D8):** rows of three text lines, covers at **16 colours**, sized in *real pixels*. chafa laid out its output in 10x20 "cells" but a terminal cell is whatever the font makes it — 16x41 on the Pocket Reform — and images are drawn at their own pixel size, so a `6x3` chafa box put a 60x60 cover inside a 96x123 slot. `App::wall` and `App::list_thumb` now divide the space by a target tile, then size the cover from the terminal's reported cell, so a cover fills its tile and each screen holds whole rows of them rather than a whole number and a blank band. Measured on the device: a 200 px 16-colour cover is **11.6 KB**, so a screenful of 21 is ~244 KB on the first paint of a screen (cached on disk; the steady state is zero bytes). That is the price of covers that fill their tiles; if it hurts on the Pi, shrink the wall with `[art] thumb_colors` or fewer columns, not the cell sizing. Settle-paint (~80 ms debounce) during fast scrolling; immediate paint on selection change.
 
-**Detail views** (now-playing, album page): single large cover, 200–240 px at 240 colours (62 KB), one image on screen.
+**Detail views** (now-playing, album page): single large cover — 320 px square on a 16x41 cell — at 240 colours (measured **139 KB**), one image on screen.
 
 ### Player contract (mpv IPC)
 
@@ -451,7 +451,7 @@ Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic
 
 ## Navigation and layout state
 
-Three rules keep the screens coherent as the app grew:
+Four rules keep the screens coherent as the app grew:
 
 - **An artist is a place, not a list.** Its page has three panes — albums,
   similar artists, biography — and `Tab` moves between them; the cursor follows
@@ -474,6 +474,14 @@ Three rules keep the screens coherent as the app grew:
   do the same. A wall keeps `h`/`l` for moving between covers, and a rail jump
   or a fresh drill-down clears the forward history, because those are new
   journeys rather than a walk back along an old one.
+
+- **Playing and selected are different things.** In the queue `▶` and the
+  accent colour mean "this is making sound", `›` and the cursor mean "Enter
+  goes here". Moving in the queue only moves the cursor: what plays, and what
+  plays next, are read from the queue's own position, so browsing a queue
+  cannot skip a track. Enter is the point where the two meet — it starts the
+  row under the cursor and the cursor then follows playback, as it does after
+  `>` or an automatic transition.
 
 Sort and layout are saved in the session file, not the config: they are how you
 left the place, set by pressing `S` and `w`, and restoring them before the first
@@ -506,7 +514,7 @@ Renderer fixtures are recorded from real `chafa` output and committed, so tests 
 ## Open questions
 
 1. **D1-open**: accept ~85 MB total with mpv, or commit to the native decoder (~30 MB, +2–3 weeks)?
-2. **Row height**: 2-line rows (~12 albums/screen, clearer thumbs) or 3-line (~8, larger art)? Default proposed: 2.
+2. ~~**Row height**: 2-line rows or 3-line?~~ **Resolved:** three-line rows, with the thumbnail as tall as the row and sized from the terminal's cell pixels.
 3. **Transcoding**: default `never` (full fidelity, more FLAC decode CPU on the Pi) or `mp3-192` (less client CPU, server load)?
 4. ~~**Repo**: public `dbeley/undertone`? MIT licence?~~ **Resolved:** public `dbeley/undertone`, GPL-3.0 to match Covertone.
 

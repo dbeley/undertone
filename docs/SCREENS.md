@@ -53,12 +53,12 @@ Enter on an album to start         │S sort · w grid · Enter · * star│end 
 
 ```
 ▸ Albums   1│ Albums · random                                                                      1 / 3
-  Artists  2│ ▚ ▚ ▚ ▚ ▚ ▚   ▚ ▚ ▚ ▚ ▚ ▚   ▚ ▚ ▚ ▚ ▚ ▚
+  Artists  2│   ▚ ▚ ▚ ▚ ▚      ▚ ▚ ▚ ▚ ▚      ▚ ▚ ▚ ▚ ▚
   Starred  3│
   Later    4│
   Lists    5│
   Queue    6│
-            │ ▸Fixture One   Fixture Two   Third
+            │ ▸Fixture One    Fixture Two    Third
             │
             │
             │
@@ -90,9 +90,9 @@ The album's cover and its tracks; the bar keeps playing state.
 
 ```
 ▸ Albums   1│ Album                                                                          Fixture One
-  Artists  2│                      Fixture One
-  Starred  3│                      Test Artist
-  Later    4│                      2000 · 3 tracks
+  Artists  2│                    Fixture One
+  Starred  3│                    Test Artist
+  Later    4│                    2000 · 3 tracks
   Lists    5│
   Queue    6│
             │

@@ -43,13 +43,18 @@ the public internet (a LAN server will be much faster). Release build.
 | Blob cache, 100 writes | 3.6 ms | after removing `fsync` per blob |
 | Blob cache, 100 reads | 744 µs | |
 
-Art pipeline, measured earlier with `examples/art_bench.rs` and `chafa` 1.18:
+Art pipeline, measured earlier with `examples/art_bench.rs` and `chafa` 1.18. The
+last two rows are the cost of covers that fill their tiles: sizing art in real
+pixels took a wall with 12 small covers to 21 at 200 px on the same screen, and
+its first paint from 11.5 KB to 244 KB — once, then cached.
 
 | Metric | Value |
 |---|---|
 | chafa, 3 images batched | 26.6 ms (vs 68.6 ms one at a time) |
 | Thumbnail size, 16 colours | 955 B |
 | Full 12-thumbnail screen | 11.5 KB |
+| Cover that fills its tile (200 px, 16 colours) | 11.6 KB |
+| Full 21-cover wall, 16x41 cell | 244 KB |
 | Cold render of 12 covers | 149 ms |
 | Warm render (cache hit) | 4.2 ms |
 | Cover fetch from the demo | 142 ms each, serial |
