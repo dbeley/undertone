@@ -1793,35 +1793,78 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// One row of the help sheet: a heading, a key and what it does, or air
+/// between two groups.
+enum HelpRow {
+    Group(&'static str),
+    Key(&'static str, &'static str),
+    Blank,
+}
+
+/// The widest key (`Ctrl-d / u`) and the widest meaning (`next / previous`),
+/// so each column is only as wide as its own content.
+const HELP_KEY_W: usize = 10;
+const HELP_DESC_W: usize = 16;
+const HELP_COL_W: usize = HELP_KEY_W + 2 + HELP_DESC_W;
+/// Air between the two columns.
+const HELP_GUTTER: usize = 3;
+
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let lines = vec![
-        Line::from(Span::styled("Undertone", title_style())),
-        Line::from(""),
-        Line::from("j / k      move down / up"),
-        Line::from("Ctrl-d/u   half-page down / up"),
-        Line::from("h / l      move left / right (wall) · h back"),
-        Line::from("w          toggle list / wall"),
-        Line::from("g / G      first / last"),
-        Line::from("Enter      open album · play track"),
-        Line::from("p / Space  play / pause"),
-        Line::from("> / <      next / previous track"),
-        Line::from("f / b      seek forward / back 10s"),
-        Line::from("s / r      shuffle / repeat"),
-        Line::from("+ / -      volume"),
-        Line::from("m          mute"),
-        Line::from("Q          queue"),
-        Line::from("L          listen later      A  artists      F  favourites"),
-        Line::from("a          save / unsave album         *  star / unstar"),
-        Line::from("S / R      change sort / reload"),
-        Line::from("Esc        back"),
-        Line::from("q          quit"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Any key closes this screen.",
-            Style::default().fg(MUTED),
-        )),
+    // Two columns of one key per row. A row costs a line and lines are the
+    // scarce resource — the sheet has the body to live in, which is 18 rows on
+    // an 80x24 terminal — so putting two keys on one line buys height at the
+    // price of the key somebody opened this to look up.
+    let left = [
+        HelpRow::Group("play"),
+        HelpRow::Key("Enter", "open · play"),
+        HelpRow::Key("p / Space", "play / pause"),
+        HelpRow::Key("> / <", "next / previous"),
+        HelpRow::Key("f / b", "seek 10s"),
+        HelpRow::Key("s", "shuffle"),
+        HelpRow::Key("r", "repeat"),
+        HelpRow::Key("+ / -", "volume"),
+        HelpRow::Key("m", "mute"),
+        HelpRow::Blank,
+        HelpRow::Group("go"),
+        HelpRow::Key("1–6", "rail"),
+        HelpRow::Key("/", "search"),
+        HelpRow::Key("Esc", "back"),
+        HelpRow::Key("q", "quit"),
     ];
-    let width = 44.min(area.width);
+    // The rail carries the playlist, listen-later and favourite keys as its own
+    // numbers, and the bar under every view names what that view adds, so this
+    // sheet only lists what neither of them can show.
+    let right = [
+        HelpRow::Group("move"),
+        HelpRow::Key("j / k", "down / up"),
+        HelpRow::Key("Ctrl-d / u", "half page"),
+        HelpRow::Key("g / G", "first / last"),
+        HelpRow::Key("h / l", "back / forward"),
+        HelpRow::Key("w", "list / wall"),
+        HelpRow::Key("Tab", "pane"),
+        HelpRow::Key("t", "albums / songs"),
+        // Move is one key shorter than play, so the second pair of headings
+        // only line up if this side gets the extra line.
+        HelpRow::Blank,
+        HelpRow::Blank,
+        HelpRow::Group("library"),
+        HelpRow::Key("*", "star / unstar"),
+        HelpRow::Key("a", "save for later"),
+        HelpRow::Key("S", "sort"),
+        HelpRow::Key("R", "reload"),
+    ];
+
+    let rows = left.len().max(right.len());
+    let lines: Vec<Line> = (0..rows)
+        .map(|index| {
+            let mut spans = help_cell(left.get(index));
+            spans.push(Span::raw(" ".repeat(HELP_GUTTER)));
+            spans.extend(help_cell(right.get(index)));
+            Line::from(spans)
+        })
+        .collect();
+
+    let width = ((HELP_COL_W * 2 + HELP_GUTTER + 2) as u16).min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
@@ -1830,8 +1873,40 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         height,
     };
     frame.render_widget(Clear, popup);
-    let block = Block::default().borders(Borders::ALL).title(" Help ");
+    // The answer to "how do I leave this" goes in the border rather than on a
+    // row of its own, and the title names the app because the header above
+    // already says Help.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Undertone ")
+        .title_bottom(Line::from(Span::styled(
+            " any key closes this ",
+            Style::default().fg(MUTED),
+        )));
     frame.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
+/// One cell of the help sheet, padded to fill its column so the two columns
+/// line up whatever each row holds.
+fn help_cell(row: Option<&HelpRow>) -> Vec<Span<'static>> {
+    match row {
+        Some(HelpRow::Key(key, what)) => vec![
+            Span::styled(
+                format!("{key:<width$}  ", width = HELP_KEY_W),
+                title_style(),
+            ),
+            Span::styled(
+                format!("{what:<width$}", width = HELP_DESC_W),
+                Style::default().fg(MUTED),
+            ),
+        ],
+        Some(HelpRow::Group(name)) => vec![Span::styled(
+            format!("{name:<width$}", width = HELP_COL_W),
+            Style::default().fg(MUTED),
+        )],
+        // No row on this side, or air between groups: keep the gutter straight.
+        None | Some(HelpRow::Blank) => vec![Span::raw(" ".repeat(HELP_COL_W))],
+    }
 }
 
 /// The bottom bar: playing track, state and keys, then the queue.
@@ -2793,6 +2868,41 @@ mod tests {
             "album hints do not follow you: {text}"
         );
     }
+    #[test]
+    fn the_help_sheet_fits_an_eighty_by_twenty_four_terminal() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.view = View::Help;
+        let text = rendered_text(&app, 80, 24);
+        // The last key of the right column and the footer in the border: if
+        // either is missing the sheet has been clipped, which is what too tall
+        // a popup does on the smallest terminal the rail still fits.
+        assert!(text.contains("reload"), "{text}");
+        assert!(text.contains("any key closes this"), "{text}");
+    }
+
+    #[test]
+    fn the_help_sheet_gives_each_key_a_row_of_its_own() {
+        let mut app = test_app(ArtProtocol::Off);
+        app.view = View::Help;
+        let text = rendered_text(&app, 100, 30);
+        for meaning in [
+            "open · play",
+            "play / pause",
+            "next / previous",
+            "half page",
+            "albums / songs",
+            "star / unstar",
+            "save for later",
+            "first / last",
+        ] {
+            assert!(text.contains(meaning), "{meaning} is documented: {text}");
+        }
+        // The two lines that held four keys are gone: the rail is the legend for
+        // artists, later and favourites, and the bar names what each view adds.
+        assert!(!text.contains("listen later"), "{text}");
+        assert!(!text.contains("favourites"), "{text}");
+    }
+
     #[test]
     fn the_rail_marks_the_current_page() {
         let mut app = test_app(ArtProtocol::Off);
