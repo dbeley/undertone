@@ -231,6 +231,9 @@ pub struct SearchState {
     pub typing: bool,
     pub hits: Vec<SearchHit>,
     pub selected: usize,
+    /// First result row on screen. Kept so moving back up walks the selection
+    /// through the window instead of dragging the whole list with it.
+    pub scroll: usize,
 }
 
 impl View {
@@ -369,6 +372,35 @@ pub struct Status {
     pub error: bool,
 }
 
+/// Everything the artist page shows, kept when you leave it so `h` and `l`
+/// can put it back without a request.
+///
+/// The page is the one screen whose state is overwritten by navigating within
+/// it (artist → similar artist), so a bare `View` in the history cannot say
+/// which artist you came from, let alone restore its biography.
+#[derive(Debug, Clone)]
+pub struct ArtistPage {
+    detail: ArtistDetail,
+    info: Option<ArtistInfo>,
+    songs: Vec<Song>,
+    pane: ArtistPane,
+    left: ArtistLeft,
+    album_selected: usize,
+    album_scroll: usize,
+    song_selected: usize,
+    song_scroll: usize,
+    similar_selected: usize,
+    bio_scroll: usize,
+}
+
+/// One place in the navigation history.
+#[derive(Debug, Clone)]
+pub struct Location {
+    view: View,
+    /// Present only for an artist page.
+    artist: Option<ArtistPage>,
+}
+
 pub struct App {
     pub client: SubsonicClient,
     pub settings: Settings,
@@ -382,10 +414,10 @@ pub struct App {
     /// Where `h` goes. A stack rather than a rule, because an album can be
     /// opened from the library, favourites, an artist or listen later, and
     /// "back" has to mean the place you came from.
-    pub nav_stack: Vec<View>,
+    pub nav_stack: Vec<Location>,
     /// Where `l` goes: the history of places you came back from, so `h` is not
     /// a one-way door.
-    pub forward_stack: Vec<View>,
+    pub forward_stack: Vec<Location>,
     pub layout: AlbumLayout,
     pub artist_layout: AlbumLayout,
     pub favorites_layout: AlbumLayout,
@@ -419,11 +451,19 @@ pub struct App {
     pub artist_song_selected: usize,
     pub artist_song_scroll: usize,
     pub artist_similar_selected: usize,
+    pub artist_similar_scroll: usize,
     pub artist_bio_scroll: usize,
+    /// The biography wrapped into its column: how many lines it makes and how
+    /// many fit on screen. Filled while drawing, because only the renderer
+    /// knows the pane's width.
+    pub artist_bio_lines: usize,
+    pub artist_bio_page: usize,
     /// The server's playlists, and the one being looked at.
     pub playlists: Vec<Playlist>,
     pub playlist_detail: Option<Playlist>,
     pub playlist_selected: usize,
+    pub playlist_scroll: usize,
+    pub playlist_detail_scroll: usize,
     pub search: SearchState,
     playlists_loaded: bool,
     pub artist_album_selected: usize,
@@ -442,10 +482,14 @@ pub struct App {
     pub scroll: usize,
     pub detail: Option<Album>,
     pub detail_selected: usize,
+    pub detail_scroll: usize,
     /// Where the queue cursor sits, as a playback-order row. `None` follows the
     /// track that is playing; moving the cursor pins it where you put it, so
     /// browsing the queue never changes what is playing or what plays next.
     pub queue_pin: Option<usize>,
+    /// First queue row on screen, so walking back up the queue moves the
+    /// selection through the window instead of pinning it to the bottom.
+    pub queue_view_scroll: usize,
 
     pub now: NowPlaying,
     pub status: Option<Status>,
@@ -519,10 +563,15 @@ impl App {
             artist_song_selected: 0,
             artist_song_scroll: 0,
             artist_similar_selected: 0,
+            artist_similar_scroll: 0,
             artist_bio_scroll: 0,
+            artist_bio_lines: 0,
+            artist_bio_page: 0,
             playlists: Vec::new(),
             playlist_detail: None,
             playlist_selected: 0,
+            playlist_scroll: 0,
+            playlist_detail_scroll: 0,
             search: SearchState::default(),
             playlists_loaded: false,
             artist_album_selected: 0,
@@ -536,7 +585,9 @@ impl App {
             scroll: 0,
             detail: None,
             detail_selected: 0,
+            detail_scroll: 0,
             queue_pin: None,
+            queue_view_scroll: 0,
             now: NowPlaying::default(),
             status: None,
             should_quit: false,
@@ -738,6 +789,7 @@ impl App {
             Ok(album) => {
                 self.detail = Some(album);
                 self.detail_selected = 0;
+                self.detail_scroll = 0;
                 self.set_view(View::AlbumDetail);
             }
             Err(err) => {
@@ -748,15 +800,24 @@ impl App {
 
     // -------------------------------------------------------- listen later
 
-    /// `a`: add or remove the album under the cursor.
+    /// `z`: add or remove the album under the cursor.
     ///
-    /// In the detail view that is the open album; in listen later it is the
-    /// row; everywhere else it is the selection in the album list.
+    /// On an album page that is the open album; on a search result it is the
+    /// album hit; everywhere else it is the selected row of an album list. A
+    /// song or a queue row has no album to save and says so.
     pub fn toggle_listen_later(&mut self) {
         let album = match self.view {
-            View::ListenLater => self.listen_albums.get(self.listen_selected).cloned(),
-            View::AlbumDetail => self.detail.clone(),
-            _ => self.albums.get(self.selected).cloned(),
+            View::Search => match self.search.hits.get(self.search.selected) {
+                Some(SearchHit::Album(album)) => Some(album.clone()),
+                _ => None,
+            },
+            View::ArtistDetail
+                if self.artist_pane != ArtistPane::Albums
+                    || self.artist_left != ArtistLeft::Albums =>
+            {
+                None
+            }
+            _ => self.album_under_cursor().map(|(album, _)| album),
         };
         let Some(album) = album else {
             self.status("no album under the cursor");
@@ -774,7 +835,7 @@ impl App {
         self.refresh_listen_albums();
         self.jump_to_view(View::ListenLater);
         if self.listen_albums.is_empty() {
-            self.status("listen later is empty — press a on an album to add it");
+            self.status("listen later is empty — press z on an album to add it");
         }
     }
 
@@ -783,6 +844,223 @@ impl App {
         if self.listen_selected >= self.listen_albums.len() {
             self.listen_selected = self.listen_albums.len().saturating_sub(1);
         }
+    }
+
+    // ---------------------------------------------------------- queue edits
+
+    /// `a` / `A`: queue whatever is under the cursor.
+    ///
+    /// `after` tucks it in behind the playing track; otherwise it goes to the
+    /// end. An album comes with all its tracks, which costs a request because
+    /// the lists only carry counts — an explicit keypress is the right time to
+    /// spend it.
+    pub fn queue_selected(&mut self, at_end: bool) {
+        if let Some(items) = self.song_items_under_cursor() {
+            self.enqueue(items, at_end);
+            return;
+        }
+        let album = match self.view {
+            View::Search => match self.search.hits.get(self.search.selected) {
+                Some(SearchHit::Album(album)) => Some(album.clone()),
+                _ => None,
+            },
+            View::ArtistDetail
+                if self.artist_pane != ArtistPane::Albums
+                    || self.artist_left != ArtistLeft::Albums =>
+            {
+                None
+            }
+            _ => self.album_under_cursor().map(|(album, _)| album),
+        };
+        let Some(album) = album else {
+            self.status("nothing under the cursor to queue");
+            return;
+        };
+        match self.client.album(&album.id) {
+            Ok(full) if !full.song.is_empty() => {
+                let items = Self::to_queue_items(&full.song);
+                self.enqueue(items, at_end);
+            }
+            Ok(_) => self.status(format!("{} has no tracks", album.name)),
+            Err(err) => self.error(format!("could not queue {}: {err}", album.name)),
+        }
+    }
+
+    /// The single song under the cursor, for a key that only makes sense on a
+    /// track: album detail, an artist's top songs, a playlist, a search hit or
+    /// a row of the queue itself.
+    fn song_items_under_cursor(&self) -> Option<Vec<QueueItem>> {
+        let item = match self.view {
+            View::AlbumDetail => self
+                .detail
+                .as_ref()?
+                .song
+                .get(self.detail_selected)
+                .map(queue_item),
+            View::ArtistDetail
+                if self.artist_pane == ArtistPane::Albums
+                    && self.artist_left == ArtistLeft::Songs =>
+            {
+                self.artist_songs
+                    .get(self.artist_song_selected)
+                    .map(queue_item)
+            }
+            View::PlaylistDetail => self
+                .playlist_detail
+                .as_ref()?
+                .entry
+                .get(self.playlist_selected)
+                .map(queue_item),
+            View::Search => match self.search.hits.get(self.search.selected) {
+                Some(SearchHit::Song(song)) => Some(queue_item(song)),
+                _ => None,
+            },
+            View::Queue => self
+                .queue
+                .playback_items()
+                .get(self.queue_cursor())
+                .map(|item| (*item).clone()),
+            _ => None,
+        };
+        item.map(|item| vec![item])
+    }
+
+    fn enqueue(&mut self, items: Vec<QueueItem>, at_end: bool) {
+        let count = items.len();
+        let what = if count == 1 {
+            items[0].title.clone()
+        } else {
+            format!("{count} tracks")
+        };
+        if at_end {
+            self.queue.append(items);
+        } else {
+            self.queue.insert_after_current(items);
+            // The player already holds the old next tracks. Inserting between
+            // them and what is playing only works if its window is rebuilt,
+            // otherwise mpv walks straight past the track just queued.
+            self.reload_player_window();
+        }
+        self.queue_view_scroll = 0;
+        self.status(format!(
+            "queued {what} {}",
+            if at_end { "at the end" } else { "next" }
+        ));
+    }
+
+    /// `o` in the queue: the album of the selected track.
+    fn open_queue_album(&mut self) {
+        let Some(item) = self.selected_queue_item() else {
+            self.status("no track under the cursor");
+            return;
+        };
+        let Some(id) = item.album_id.clone() else {
+            self.status("this track names no album");
+            return;
+        };
+        let album = Album {
+            id,
+            name: item.album.clone().unwrap_or_default(),
+            ..Default::default()
+        };
+        self.open_album(album);
+    }
+
+    /// `i` in the queue: the artist of the selected track.
+    fn open_queue_artist(&mut self) {
+        let Some(item) = self.selected_queue_item() else {
+            self.status("no track under the cursor");
+            return;
+        };
+        let Some(id) = item.artist_id.clone() else {
+            self.status("this track names no artist");
+            return;
+        };
+        let name = item.artist.clone().unwrap_or_default();
+        self.open_artist(&id, &name);
+    }
+
+    fn selected_queue_item(&self) -> Option<QueueItem> {
+        self.queue
+            .playback_items()
+            .get(self.queue_cursor())
+            .map(|item| (*item).clone())
+    }
+
+    /// `x`: drop the selected queue row.
+    ///
+    /// Removing the playing track starts whatever takes its place; removing an
+    /// earlier or later one leaves the music alone. If the row was already in
+    /// the player's lookahead, the window is rebuilt so mpv cannot play a
+    /// track that is no longer in the queue.
+    pub fn remove_queue_item(&mut self) {
+        if self.view != View::Queue {
+            return;
+        }
+        let index = self.queue_cursor();
+        let current = self.queue.position();
+        let base = self.now.playlist_base;
+        // Any removal inside the window invalidates mpv's position mapping,
+        // including a row it has already played; only a row before the window
+        // can be accounted for by shifting the base.
+        let in_window = self.now.loaded && index >= base && index < base + self.now.playlist_len;
+        let Some(removed) = self.queue.remove(index) else {
+            return;
+        };
+        if self.queue.is_empty() {
+            let _ = self.player.stop();
+            self.now = NowPlaying::default();
+            self.pending_seek = None;
+            self.queue_pin = None;
+            self.status(format!("removed {}", removed.title));
+            return;
+        }
+        if Some(index) == current {
+            // The row that was playing is gone; the queue's new current takes
+            // over. A restored session has not started playing yet, so it is
+            // only shown, not started.
+            if self.now.loaded {
+                self.play_current();
+            } else {
+                self.adopt_current_silently();
+            }
+            self.status(format!("removed {}", removed.title));
+            return;
+        }
+        if let Some(pin) = self.queue_pin {
+            // The rows after the removed one move up by one; a pinned cursor
+            // moves with them rather than jumping to the hole.
+            let pin = if index < pin { pin - 1 } else { pin };
+            self.queue_pin = Some(pin.min(self.queue.len().saturating_sub(1)));
+        }
+        if index < base {
+            // The window starts later now: its first entry is one queue row
+            // closer to the front.
+            self.now.playlist_base = base - 1;
+        } else if in_window {
+            self.reload_player_window();
+        }
+        self.status(format!("removed {}", removed.title));
+    }
+
+    /// `J` / `K`: move the selected queue row down / up.
+    ///
+    /// The cursor follows the row you are carrying, and the player window is
+    /// rebuilt when something is playing because mpv holds its own copy of the
+    /// order.
+    pub fn move_queue_item(&mut self, delta: i32) {
+        if self.view != View::Queue || self.queue.len() < 2 {
+            return;
+        }
+        let from = self.queue_cursor();
+        let to = (from as i32 + delta).clamp(0, self.queue.len() as i32 - 1) as usize;
+        if from == to || !self.queue.move_item(from, to) {
+            return;
+        }
+        if self.queue_pin.is_some() {
+            self.queue_pin = Some(to);
+        }
+        self.reload_player_window();
     }
 
     // ---------------------------------------------------------------- artists
@@ -807,6 +1085,7 @@ impl App {
                     .chain(result.song.into_iter().map(SearchHit::Song))
                     .collect();
                 self.search.selected = 0;
+                self.search.scroll = 0;
                 if self.view != View::Search {
                     self.set_view(View::Search);
                 }
@@ -836,6 +1115,7 @@ impl App {
         }
         self.jump_to_view(View::Playlists);
         self.playlist_selected = 0;
+        self.playlist_scroll = 0;
         if self.playlists.is_empty() {
             self.status("no playlists on this server");
         }
@@ -847,6 +1127,7 @@ impl App {
             Ok(playlist) => {
                 self.playlist_detail = Some(playlist);
                 self.playlist_selected = 0;
+                self.playlist_detail_scroll = 0;
                 self.set_view(View::PlaylistDetail);
             }
             Err(err) => self.error(format!("could not load playlist: {err}")),
@@ -869,7 +1150,7 @@ impl App {
         self.play_current();
     }
 
-    /// `A`: the artist list, fetched once and kept.
+    /// The artist list (`2`), fetched once and kept.
     pub fn open_artists(&mut self) {
         if self.artists.is_empty() {
             match self.client.artists() {
@@ -908,13 +1189,23 @@ impl App {
     /// similar artists come from `getArtistInfo2` and are not. A server without
     /// that endpoint (or without Last.fm data) still gets a usable page.
     pub fn open_artist(&mut self, id: &str, name: &str) {
+        // Following a similar artist from an artist page overwrites that page,
+        // so remember where we are *before* the new data lands. `set_view`
+        // cannot do it: by then the page it would save is already the new one.
+        if self.artist_id() == Some(id) {
+            return;
+        }
+        let here = self.location();
         match self.client.artist(id) {
             Ok(detail) => {
+                self.nav_stack.push(here);
+                self.forward_stack.clear();
                 self.artist_detail = Some(detail);
                 self.artist_album_selected = 0;
                 self.artist_album_scroll = 0;
                 self.artist_pane = ArtistPane::Albums;
                 self.artist_similar_selected = 0;
+                self.artist_similar_scroll = 0;
                 self.artist_bio_scroll = 0;
                 self.artist_left = ArtistLeft::Albums;
                 self.artist_song_selected = 0;
@@ -926,7 +1217,9 @@ impl App {
                     .client
                     .top_songs(name, Self::TOP_SONGS)
                     .unwrap_or_default();
-                self.set_view(View::ArtistDetail);
+                self.view = View::ArtistDetail;
+                self.needs_clear = true;
+                self.needs_redraw = true;
             }
             Err(err) => self.error(format!("could not open {name}: {err}")),
         }
@@ -945,7 +1238,7 @@ impl App {
         self.play_current();
     }
 
-    /// `A` on an album: the artist behind it.
+    /// `i` on an album: the artist behind it.
     pub fn open_album_artist(&mut self) {
         let Some(album) = self.detail.as_ref() else {
             return;
@@ -960,7 +1253,7 @@ impl App {
 
     // ------------------------------------------------------------- favourites
 
-    /// `F`: starred albums.
+    /// Starred albums (`3`).
     pub fn open_favorites(&mut self) {
         match self.client.starred() {
             Ok(starred) => {
@@ -1050,11 +1343,7 @@ impl App {
     // ------------------------------------------------------------ playback
 
     fn stream_url(&self, song_id: &str) -> String {
-        if self.settings.transcode {
-            self.client.stream_url(song_id, Some(192), Some("mp3"))
-        } else {
-            self.client.stream_url(song_id, None, None)
-        }
+        self.client.stream_url(song_id)
     }
 
     fn to_queue_items(songs: &[Song]) -> Vec<QueueItem> {
@@ -1141,6 +1430,64 @@ impl App {
                 self.now.position = seconds;
             }
         }
+    }
+
+    /// Rebuild the player's lookahead window around the track that is playing.
+    ///
+    /// Used when the queue changes under the player — inserting a track "next"
+    /// is the case that matters. The window is replaced, so the stream restarts
+    /// and is seeked back to where it was; state that belongs to the play
+    /// (scrobble progress, listened time) is left alone.
+    fn reload_player_window(&mut self) {
+        if !self.now.loaded {
+            return;
+        }
+        let Some(_) = self.queue.current() else {
+            return;
+        };
+        let base = self.queue.position().unwrap_or(0);
+        let window: Vec<TrackSource> = self
+            .queue
+            .window(PLAYLIST_WINDOW)
+            .iter()
+            .map(|item| TrackSource {
+                url: self.stream_url(&item.id),
+                title: item.title.clone(),
+            })
+            .collect();
+        if window.is_empty() {
+            return;
+        }
+        let seconds = self.now.position;
+        let paused = self.now.paused;
+        if self.player.load(&window, LoadMode::Replace).is_err() {
+            return;
+        }
+        self.now.playlist_base = base;
+        self.now.playlist_len = window.len();
+        if seconds > 0.5 {
+            let _ = self.player.seek(Seek::Absolute, seconds);
+        }
+        if paused {
+            let _ = self.player.pause(true);
+        }
+    }
+
+    /// Show the queue's current track in the bar without starting it.
+    ///
+    /// This is the restored-session state: a track is named and selected, but
+    /// nothing has been handed to the player until you press play.
+    fn adopt_current_silently(&mut self) {
+        let Some(item) = self.queue.current().cloned() else {
+            return;
+        };
+        self.now.track = Some(item.clone());
+        self.now.position = 0.0;
+        self.now.duration = f64::from(item.duration.unwrap_or(0));
+        self.now.paused = true;
+        self.now.loaded = false;
+        self.pending_seek = None;
+        self.needs_redraw = true;
     }
 
     /// Take the queue's current track as what is playing, without touching the
@@ -1357,6 +1704,11 @@ impl App {
         let rows = match self.layout_of(self.view) {
             Some(AlbumLayout::Grid) => self.wall(width, height).per_page(),
             Some(AlbumLayout::List) => list_rows(height),
+            None if self.view == View::ArtistDetail
+                && self.artist_pane == ArtistPane::Biography =>
+            {
+                self.artist_bio_page.max(1)
+            }
             // Detail and queue rows are one line each; leave a row for the
             // view's own header so the page never overshoots the window.
             None => (usize::from(height).saturating_sub(2)).max(1),
@@ -1518,11 +1870,69 @@ impl App {
     /// movement between views has to clear the screen rather than diff it.
     pub fn set_view(&mut self, view: View) {
         if self.view != view {
-            self.nav_stack.push(self.view);
+            self.nav_stack.push(self.location());
+            // Going somewhere new is not "forward": the way ahead is a dead end
+            // once you pick another door. Help is a modal, so it leaves the way
+            // ahead exactly where it found it.
+            if view != View::Help {
+                self.forward_stack.clear();
+            }
             self.view = view;
             self.needs_clear = true;
             self.needs_redraw = true;
         }
+    }
+
+    /// The screen as it stands, ready to be put back.
+    fn location(&self) -> Location {
+        Location {
+            view: self.view,
+            artist: if self.view == View::ArtistDetail {
+                self.artist_detail.as_ref().map(|detail| ArtistPage {
+                    detail: detail.clone(),
+                    info: self.artist_info.clone(),
+                    songs: self.artist_songs.clone(),
+                    pane: self.artist_pane,
+                    left: self.artist_left,
+                    album_selected: self.artist_album_selected,
+                    album_scroll: self.artist_album_scroll,
+                    song_selected: self.artist_song_selected,
+                    song_scroll: self.artist_song_scroll,
+                    similar_selected: self.artist_similar_selected,
+                    bio_scroll: self.artist_bio_scroll,
+                })
+            } else {
+                None
+            },
+        }
+    }
+
+    /// Put a history entry back on screen.
+    fn restore(&mut self, target: Location) {
+        if let Some(page) = target.artist {
+            self.artist_detail = Some(page.detail);
+            self.artist_info = page.info;
+            self.artist_songs = page.songs;
+            self.artist_pane = page.pane;
+            self.artist_left = page.left;
+            self.artist_album_selected = page.album_selected;
+            self.artist_album_scroll = page.album_scroll;
+            self.artist_song_selected = page.song_selected;
+            self.artist_song_scroll = page.song_scroll;
+            self.artist_similar_selected = page.similar_selected;
+            self.artist_bio_scroll = page.bio_scroll;
+        }
+        self.view = target.view;
+        self.needs_clear = true;
+        self.needs_redraw = true;
+    }
+
+    /// The artist page currently on screen, if any.
+    fn artist_id(&self) -> Option<&str> {
+        if self.view != View::ArtistDetail {
+            return None;
+        }
+        self.artist_detail.as_ref().map(|artist| artist.id.as_str())
     }
 
     /// Move to a top-level view from the rail: the back stack resets, because
@@ -1531,6 +1941,7 @@ impl App {
         if view == View::Queue {
             // Opening the queue shows where you are, not where you last looked.
             self.queue_pin = None;
+            self.queue_view_scroll = 0;
         }
         if self.view != view {
             self.view = view;
@@ -1549,13 +1960,24 @@ impl App {
     pub fn go_back(&mut self) {
         // No history (a restored session, say) falls back to the library: a key
         // that does nothing reads as broken.
-        let target = self.nav_stack.pop().unwrap_or(View::Albums);
-        if target != self.view {
-            self.forward_stack.push(self.view);
-            self.view = target;
+        let target = self.nav_stack.pop().unwrap_or(Location {
+            view: View::Albums,
+            artist: None,
+        });
+        let already_there = target.view == self.view
+            && match &target.artist {
+                Some(page) => self.artist_id() == Some(page.detail.id.as_str()),
+                None => self.view != View::ArtistDetail,
+            };
+        if already_there {
+            return;
         }
-        self.needs_clear = true;
-        self.needs_redraw = true;
+        // Help is a modal, not a place: leaving it must not become somewhere
+        // `l` can take you back to.
+        if self.view != View::Help {
+            self.forward_stack.push(self.location());
+        }
+        self.restore(target);
     }
 
     /// `l`: back to where you were before you pressed `h`.
@@ -1563,12 +1985,11 @@ impl App {
         let Some(target) = self.forward_stack.pop() else {
             return;
         };
-        if target != self.view {
-            self.nav_stack.push(self.view);
-            self.view = target;
+        if target.view == View::Help {
+            return;
         }
-        self.needs_clear = true;
-        self.needs_redraw = true;
+        self.nav_stack.push(self.location());
+        self.restore(target);
     }
 
     /// The layout a view is using, if it has one.
@@ -1703,7 +2124,18 @@ impl App {
                 self.set_view(next);
             }
             KeyCode::Char('w') => self.toggle_current_layout(),
-            KeyCode::Char('a') => self.toggle_listen_later(),
+            // Queue management, on albums and songs alike: `a` tucks the
+            // selection in after what is playing, `A` puts it at the end.
+            KeyCode::Char('a') => self.queue_selected(false),
+            KeyCode::Char('A') => self.queue_selected(true),
+            // `z` for "zzz": the old `a` (save for later) moved aside.
+            KeyCode::Char('z') => self.toggle_listen_later(),
+            KeyCode::Char('o') if self.view == View::Queue => self.open_queue_album(),
+            KeyCode::Char('i') if self.view == View::Queue => self.open_queue_artist(),
+            KeyCode::Char('x') if self.view == View::Queue => self.remove_queue_item(),
+            KeyCode::Char('J') if self.view == View::Queue => self.move_queue_item(1),
+            KeyCode::Char('K') if self.view == View::Queue => self.move_queue_item(-1),
+            KeyCode::Char('i') if self.view == View::AlbumDetail => self.open_album_artist(),
             KeyCode::Tab if self.view == View::ArtistDetail => {
                 self.artist_pane = self.artist_pane.next()
             }
@@ -1715,12 +2147,6 @@ impl App {
                 self.artist_pane = ArtistPane::Albums;
                 self.status(format!("artist: {}", self.artist_left.label()));
             }
-            KeyCode::Char('L') => self.open_listen_later(),
-            // On an album, `A` is the artist behind it; everywhere else it is
-            // the artist list.
-            KeyCode::Char('A') if self.view == View::AlbumDetail => self.open_album_artist(),
-            KeyCode::Char('A') => self.open_artists(),
-            KeyCode::Char('F') => self.open_favorites(),
             // The rail, with explicit jumps.
             KeyCode::Char('1') => self.jump_to_view(View::Albums),
             KeyCode::Char('2') => self.open_artists(),
@@ -1785,12 +2211,10 @@ impl App {
                     .as_ref()
                     .map(|info| info.similar_artist.len())
                     .unwrap_or(0),
-                ArtistPane::Biography => self
-                    .artist_info
-                    .as_ref()
-                    .and_then(|info| info.biography.as_deref())
-                    .map(|text| text.lines().count())
-                    .unwrap_or(0),
+                // The biography is scrolled, not selected. Its wrapped
+                // line count comes from the renderer, which is the only part
+                // that knows how wide the pane is.
+                ArtistPane::Biography => self.artist_bio_lines,
             },
             View::Favorites => self.favorites.len(),
             View::Queue => self.queue.len(),
@@ -1872,7 +2296,10 @@ impl App {
                     ArtistLeft::Songs => self.artist_song_selected = next,
                 },
                 ArtistPane::Similar => self.artist_similar_selected = next,
-                ArtistPane::Biography => self.artist_bio_scroll = next,
+                ArtistPane::Biography => {
+                    let max = self.bio_max_scroll();
+                    self.artist_bio_scroll = next.min(max);
+                }
             },
             View::Favorites => self.favorite_selected = next,
             View::Queue => self.queue_pin = Some(next),
@@ -1881,6 +2308,12 @@ impl App {
             View::Search => self.search.selected = next,
             View::Help => {}
         }
+    }
+
+    /// How far down the biography can go while a full pane stays on screen.
+    fn bio_max_scroll(&self) -> usize {
+        self.artist_bio_lines
+            .saturating_sub(self.artist_bio_page.max(1))
     }
 
     fn jump_cursor(&mut self, target: usize) {
@@ -1899,7 +2332,7 @@ impl App {
             View::ArtistDetail => match self.artist_pane {
                 ArtistPane::Albums => self.artist_album_selected = next,
                 ArtistPane::Similar => self.artist_similar_selected = next,
-                ArtistPane::Biography => self.artist_bio_scroll = next,
+                ArtistPane::Biography => self.artist_bio_scroll = target.min(self.bio_max_scroll()),
             },
             View::Favorites => self.favorite_selected = next,
             View::Queue => self.queue_pin = Some(next),
@@ -2068,6 +2501,64 @@ impl App {
                 )
             }
         }
+    }
+
+    /// Keep a one-line-per-row cursor inside its window. These views used to
+    /// pin the selection to the bottom row, which dragged the whole list down
+    /// (and back up) under the cursor.
+    pub fn ensure_detail_track_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.detail_selected,
+            &mut self.detail_scroll,
+            usize::from(height).max(1),
+        );
+    }
+
+    pub fn ensure_queue_visible(&mut self, height: u16) {
+        let mut selected = self.queue_cursor();
+        let mut scroll = self.queue_view_scroll;
+        scroll_into_view(&mut selected, &mut scroll, usize::from(height).max(1));
+        self.queue_view_scroll = scroll;
+    }
+
+    pub fn ensure_playlist_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.playlist_selected,
+            &mut self.playlist_scroll,
+            usize::from(height).max(1),
+        );
+    }
+
+    pub fn ensure_playlist_detail_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.playlist_selected,
+            &mut self.playlist_detail_scroll,
+            usize::from(height).max(1),
+        );
+    }
+
+    pub fn ensure_artist_songs_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.artist_song_selected,
+            &mut self.artist_song_scroll,
+            usize::from(height).max(1),
+        );
+    }
+
+    pub fn ensure_artist_similar_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.artist_similar_selected,
+            &mut self.artist_similar_scroll,
+            usize::from(height).max(1),
+        );
+    }
+
+    pub fn ensure_search_visible(&mut self, height: u16) {
+        scroll_into_view(
+            &mut self.search.selected,
+            &mut self.search.scroll,
+            usize::from(height).max(1),
+        );
     }
 
     /// Keep the artist-albums cursor inside its window.
@@ -2295,6 +2786,8 @@ fn queue_item(song: &Song) -> QueueItem {
         title: song.title.clone(),
         artist: song.artist.clone(),
         album: song.album.clone(),
+        album_id: song.album_id.clone(),
+        artist_id: song.artist_id.clone(),
         cover_art: song.cover_art.clone(),
         duration: song.duration,
         suffix: song.suffix.clone(),
@@ -2327,13 +2820,10 @@ mod tests {
             password: "demo".into(),
             scrobble: false,
             auto_dj: false,
-            art_mode: "off".into(),
-            thumb_colors: 16,
-            cover_colors: 240,
+            palette: crate::config::Palette::Partial,
             cache_dir: PathBuf::from("/tmp/undertone-test"),
             cache_bytes: 1024 * 1024,
             mpv_binary: PathBuf::from("mpv"),
-            transcode: false,
             backdrop: [0, 0, 0],
         }
     }
@@ -2345,7 +2835,7 @@ mod tests {
             password: "demo".into(),
         });
         let art = ArtService::from_settings(
-            ArtProtocol::Off,
+            ArtProtocol::Symbols,
             &PathBuf::from("/tmp/undertone-test-art"),
             1024,
             None,
@@ -2356,7 +2846,7 @@ mod tests {
             settings(),
             Box::new(NullPlayer::new()),
             art,
-            ArtProtocol::Off,
+            ArtProtocol::Symbols,
             CellSize {
                 width: 8,
                 height: 17,
@@ -2575,6 +3065,30 @@ mod tests {
     }
 
     #[test]
+    fn search_scrolling_holds_still_while_the_cursor_walks_the_window() {
+        let mut app = app();
+        app.search.hits = (0..20)
+            .map(|i| SearchHit::Song(song(&i.to_string())))
+            .collect();
+
+        app.search.selected = 4;
+        app.ensure_search_visible(5);
+        assert_eq!(app.search.scroll, 0, "the first screen stays put");
+
+        app.search.selected = 7;
+        app.ensure_search_visible(5);
+        assert_eq!(app.search.scroll, 3, "a full window scrolls just enough");
+
+        app.search.selected = 6;
+        app.ensure_search_visible(5);
+        assert_eq!(app.search.scroll, 3, "moving up walks inside the window");
+
+        app.search.selected = 2;
+        app.ensure_search_visible(5);
+        assert_eq!(app.search.scroll, 2, "only the top edge pulls the list");
+    }
+
+    #[test]
     fn paging_stays_put_with_no_items() {
         let mut app = app();
         app.handle_key(ctrl(KeyCode::Char('d')));
@@ -2582,19 +3096,19 @@ mod tests {
     }
 
     #[test]
-    fn a_saves_the_selected_album_and_l_lists_it() {
+    fn z_saves_the_selected_album_and_4_lists_it() {
         let mut app = app();
         app.albums = vec![album("a", 1), album("b", 1)];
 
-        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('z')));
         assert_eq!(app.listen_albums.len(), 1);
         assert_eq!(app.listen_albums[0].id, "a");
 
-        app.handle_key(key(KeyCode::Char('L')));
+        app.handle_key(key(KeyCode::Char('4')));
         assert_eq!(app.view, View::ListenLater);
 
-        // Pressing a on the row removes it again.
-        app.handle_key(key(KeyCode::Char('a')));
+        // Pressing z on the row removes it again.
+        app.handle_key(key(KeyCode::Char('z')));
         assert!(app.listen_albums.is_empty());
     }
 
@@ -2602,7 +3116,7 @@ mod tests {
     fn listen_later_round_trips_through_the_file() {
         let mut app = app();
         app.albums = vec![album("a", 1)];
-        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('z')));
 
         // A fresh load of the same path sees the entry.
         let path = app.listen_later.path().to_path_buf();
@@ -2613,14 +3127,14 @@ mod tests {
     fn vim_keys_move_within_listen_later() {
         let mut app = app();
         app.albums = vec![album("a", 1), album("b", 1), album("c", 1)];
-        // Move between toggles: `a` on the same row would add then remove.
-        app.handle_key(key(KeyCode::Char('a')));
+        // Move between toggles: `z` on the same row would add then remove.
+        app.handle_key(key(KeyCode::Char('z')));
         app.handle_key(key(KeyCode::Char('j')));
-        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('z')));
         app.handle_key(key(KeyCode::Char('j')));
-        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('z')));
         // Newest first: c, b, a.
-        app.handle_key(key(KeyCode::Char('L')));
+        app.handle_key(key(KeyCode::Char('4')));
         assert_eq!(app.listen_selected, 0);
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.listen_selected, 1);
@@ -3127,6 +3641,93 @@ mod tests {
     }
 
     #[test]
+    fn x_removes_the_selected_row_and_leaves_playback_alone() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b"), track("c")]);
+        app.play_current();
+        app.view = View::Queue;
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('j')));
+
+        app.handle_key(key(KeyCode::Char('x')));
+
+        let ids: Vec<&str> = app
+            .queue
+            .playback_items()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a", "b"]);
+        assert_eq!(app.queue_cursor(), 1, "the cursor closes the gap");
+        assert_eq!(
+            app.now.track.as_ref().map(|t| t.id.as_str()),
+            Some("a"),
+            "what is playing keeps playing"
+        );
+    }
+
+    #[test]
+    fn x_on_the_playing_row_starts_what_replaces_it() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b"), track("c")]);
+        app.play_current();
+        app.view = View::Queue;
+
+        app.handle_key(key(KeyCode::Char('x')));
+
+        assert_eq!(app.queue.len(), 2);
+        assert_eq!(
+            app.now.track.as_ref().map(|t| t.id.as_str()),
+            Some("b"),
+            "the next row takes over"
+        );
+        assert_eq!(app.queue.position(), Some(0));
+
+        // Removing the last one stops playback instead of leaving a ghost.
+        app.handle_key(key(KeyCode::Char('x')));
+        app.handle_key(key(KeyCode::Char('x')));
+        assert!(app.queue.is_empty());
+        assert!(app.now.track.is_none(), "nothing is playing any more");
+        assert!(!app.now.loaded);
+    }
+
+    #[test]
+    fn capital_j_and_k_reorder_the_queue_and_carry_the_cursor() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b"), track("c")]);
+        app.play_current();
+        app.view = View::Queue;
+
+        app.handle_key(key(KeyCode::Char('J')));
+        app.handle_key(key(KeyCode::Char('J')));
+        let ids: Vec<&str> = app
+            .queue
+            .playback_items()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["b", "c", "a"]);
+        assert_eq!(
+            app.now.track.as_ref().map(|t| t.id.as_str()),
+            Some("a"),
+            "reordering does not change the track"
+        );
+
+        app.handle_key(key(KeyCode::Char('K')));
+        let ids: Vec<&str> = app
+            .queue
+            .playback_items()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["b", "a", "c"]);
+        assert_eq!(app.queue_cursor(), 1, "the carried row is still selected");
+    }
+
+    #[test]
     fn enter_in_the_queue_starts_the_row_under_the_cursor() {
         let mut app = app();
         app.settings.auto_dj = false;
@@ -3409,8 +4010,14 @@ mod tests {
         assert_eq!(app.artist_album_selected, 0, "the album cursor stays put");
 
         app.handle_key(key(KeyCode::Tab)); // biography
+                                           // The renderer normally fills these in; a bare App in a test has not
+                                           // drawn yet, and without them there is nothing to scroll.
+        app.artist_bio_lines = 40;
+        app.artist_bio_page = 5;
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.artist_bio_scroll, 1);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.artist_bio_scroll, 0, "and k walks back up");
     }
 
     #[test]
@@ -3425,7 +4032,7 @@ mod tests {
     }
 
     #[test]
-    fn a_names_the_artist_of_the_open_album() {
+    fn i_names_the_artist_of_the_open_album() {
         let mut app = app();
         app.detail = Some(Album {
             id: "al-1".into(),
@@ -3435,20 +4042,38 @@ mod tests {
         });
         app.view = View::AlbumDetail;
 
-        app.handle_key(key(KeyCode::Char('A')));
+        app.handle_key(key(KeyCode::Char('i')));
 
         let status = app.status.as_ref().expect("a message");
         assert!(status.text.contains("names no artist"), "{}", status.text);
     }
 
     #[test]
-    fn a_still_opens_the_artist_list_from_elsewhere() {
+    fn a_and_big_a_queue_the_selection_after_the_current_and_at_the_end() {
         let mut app = app();
-        app.view = View::Albums;
-        // No network here: opening the list will fail and report it, which is
-        // enough to show the key still routes to the list rather than the page.
+        app.detail = Some(album("x", 3));
+        app.view = View::AlbumDetail;
+        app.detail_selected = 1;
+        app.queue.replace(vec![track("q1"), track("q2")]);
+
+        app.handle_key(key(KeyCode::Char('a')));
+        let ids: Vec<&str> = app
+            .queue
+            .playback_items()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["q1", "x-1", "q2"], "a tucks it in next");
+
         app.handle_key(key(KeyCode::Char('A')));
-        assert_ne!(app.view, View::ArtistDetail);
+        let ids: Vec<&str> = app
+            .queue
+            .playback_items()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["q1", "x-1", "q2", "x-1"], "A adds at the end");
+        assert_eq!(app.queue.items()[0].id, "q1", "the playing track stayed");
     }
 
     #[test]
@@ -3551,7 +4176,7 @@ mod tests {
     fn h_leaves_listen_later_again() {
         let mut app = app();
         app.albums = vec![album("a", 1)];
-        app.handle_key(key(KeyCode::Char('L')));
+        app.handle_key(key(KeyCode::Char('4')));
         assert_eq!(app.view, View::ListenLater);
         app.handle_key(key(KeyCode::Char('h')));
         assert_eq!(app.view, View::Albums);
@@ -3589,10 +4214,50 @@ mod tests {
     }
 
     #[test]
-    fn a_opens_the_artist_list_without_refetching() {
+    fn h_and_l_walk_artist_to_artist_without_losing_either_page() {
+        let mut app = app();
+        app.artist_detail = Some(ArtistDetail {
+            id: "ar-1".into(),
+            name: "First".into(),
+            album: vec![album("a", 1)],
+            ..Default::default()
+        });
+        app.artist_info = Some(ArtistInfo {
+            biography: Some("the first biography".into()),
+            ..Default::default()
+        });
+        app.view = View::ArtistDetail;
+
+        // Standing in for a similar-artist jump: the old page is saved before
+        // the new one overwrites it.
+        app.nav_stack.push(app.location());
+        app.artist_detail = Some(ArtistDetail {
+            id: "ar-2".into(),
+            name: "Second".into(),
+            ..Default::default()
+        });
+        app.artist_info = None;
+
+        app.go_back();
+        assert_eq!(app.artist_detail.as_ref().unwrap().id, "ar-1");
+        assert_eq!(
+            app.artist_info
+                .as_ref()
+                .and_then(|info| info.biography.as_deref()),
+            Some("the first biography"),
+            "the page comes back whole, not just its id"
+        );
+        assert_eq!(app.artist_detail.as_ref().unwrap().album.len(), 1);
+
+        app.go_forward();
+        assert_eq!(app.artist_detail.as_ref().unwrap().id, "ar-2");
+    }
+
+    #[test]
+    fn two_opens_the_artist_list_without_refetching() {
         let mut app = app();
         app.artists = vec![artist("ar-1", "Aphex Twin")];
-        app.handle_key(key(KeyCode::Char('A')));
+        app.handle_key(key(KeyCode::Char('2')));
 
         assert_eq!(app.view, View::Artists);
         // The server in tests does not exist, so reaching it would have set an
@@ -3757,6 +4422,30 @@ mod tests {
         assert_eq!(app.view, View::Help);
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.view, View::Albums, "any key closes help");
+    }
+
+    #[test]
+    fn closing_help_does_not_leave_it_in_the_forward_history() {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char('?')));
+        assert_eq!(app.view, View::Help);
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.view, View::Albums);
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_ne!(app.view, View::Help, "l goes forward, not back into help");
+    }
+
+    #[test]
+    fn help_leaves_the_forward_history_alone() {
+        let mut app = app();
+        app.detail = Some(album("al-1", 1));
+        app.set_view(View::AlbumDetail);
+        app.handle_key(key(KeyCode::Char('h'))); // Albums, with the album ahead
+
+        app.handle_key(key(KeyCode::Char('?')));
+        app.handle_key(key(KeyCode::Char('j'))); // closes help
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.view, View::AlbumDetail, "help is a dead-end modal");
     }
 
     #[test]

@@ -41,6 +41,12 @@ pub struct QueueItem {
     pub title: String,
     pub artist: Option<String>,
     pub album: Option<String>,
+    /// Album and artist ids, so a queue row can open either page. Optional
+    /// because a session saved before these were kept still has to load.
+    #[serde(default)]
+    pub album_id: Option<String>,
+    #[serde(default)]
+    pub artist_id: Option<String>,
     pub cover_art: Option<String>,
     pub duration: Option<u32>,
     /// Container extension as the server reports it (`flac`, `mp3`, …).
@@ -197,6 +203,26 @@ impl Queue {
         self.items.extend(items);
         self.order.extend(base..self.items.len());
         if self.pos.is_none() && !self.order.is_empty() {
+            self.pos = Some(0);
+        }
+    }
+
+    /// Add tracks right after the one that is playing, keeping its place.
+    ///
+    /// With nothing playing this is the same as replacing an empty queue: the
+    /// new tracks land at the front and nothing starts until you ask.
+    pub fn insert_after_current(&mut self, items: Vec<QueueItem>) {
+        if items.is_empty() {
+            return;
+        }
+        let base = self.items.len();
+        self.items.extend(items);
+        let at = match self.pos {
+            Some(pos) => (pos + 1).min(self.order.len()),
+            None => 0,
+        };
+        self.order.splice(at..at, base..self.items.len());
+        if self.pos.is_none() {
             self.pos = Some(0);
         }
     }
@@ -507,6 +533,32 @@ mod tests {
         let mut queue = Queue::new();
         queue.append(vec![item("a")]);
         assert_eq!(current_id(&queue), Some("a"));
+    }
+
+    #[test]
+    fn inserting_after_the_current_keeps_it_playing_and_orders_the_new_tracks() {
+        let mut queue = queue_of(&["a", "b", "c"]);
+        queue.advance(); // b plays
+        queue.insert_after_current(vec![item("x"), item("y")]);
+
+        let ids: Vec<_> = queue
+            .playback_items()
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a", "b", "x", "y", "c"]);
+        assert_eq!(current_id(&queue), Some("b"));
+        queue.advance();
+        assert_eq!(current_id(&queue), Some("x"));
+        assert_permutation(&queue);
+    }
+
+    #[test]
+    fn inserting_into_an_empty_queue_starts_at_the_front() {
+        let mut queue = Queue::new();
+        queue.insert_after_current(vec![item("a"), item("b")]);
+        assert_eq!(current_id(&queue), Some("a"));
+        assert_permutation(&queue);
     }
 
     #[test]
