@@ -2,8 +2,8 @@
 """Run the interface through the terminal shapes it claims to support.
 
 Each row starts the real binary in a pty, waits for the first frame, and checks
-what the screen actually shows: the right art protocol for the setting, a
-usable layout at that size, and no panic. Output is a table you can paste into
+what the screen actually shows: the right art protocol for the terminal it
+presents as, a usable layout at that size, and no panic. Output is a table you can paste into
 the docs.
 
     python3 scripts/degradation.py ./target/release/undertone
@@ -27,6 +27,31 @@ import termios
 import time
 
 COLS, ROWS = 104, 30
+
+# There is no art mode flag: the binary asks the terminal, so each row presents
+# as the terminal it is meant to be. `None` removes an inherited variable, which
+# matters when the script is run inside kitty or tmux.
+SIXEL_TERM = {
+    "TERM": "foot",
+    "TERM_PROGRAM": "foot",
+    "KITTY_WINDOW_ID": None,
+    "TMUX": None,
+    "ZELLIJ": None,
+}
+KITTY_TERM = {
+    "TERM": "xterm-kitty",
+    "TERM_PROGRAM": "ghostty",
+    "KITTY_WINDOW_ID": None,
+    "TMUX": None,
+    "ZELLIJ": None,
+}
+SYMBOLS_TERM = {
+    "TERM": "xterm-256color",
+    "TERM_PROGRAM": None,
+    "KITTY_WINDOW_ID": None,
+    "TMUX": None,
+    "ZELLIJ": None,
+}
 
 SIXEL = re.compile(rb"\x1bP[0-9;]*q")
 KITTY = re.compile(rb"\x1b_G")
@@ -119,7 +144,11 @@ class Screen:
 def run(binary, args, cols=COLS, rows=ROWS, seconds=7.0, env_extra=None):
     env = dict(os.environ)
     env.setdefault("TERM", "xterm-256color")
-    env.update(env_extra or {})
+    for key, value in (env_extra or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     pid, fd = pty.fork()
     if pid == 0:
         os.execve(binary, [binary, *args], env)
@@ -152,10 +181,10 @@ def run(binary, args, cols=COLS, rows=ROWS, seconds=7.0, env_extra=None):
     return raw, screen.text(), alive
 
 
-def start_fixture():
+def start_fixture(extra_args=()):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixture_server.py")
     process = subprocess.Popen(
-        [sys.executable, script], stdout=subprocess.PIPE, text=True
+        [sys.executable, script, *extra_args], stdout=subprocess.PIPE, text=True
     )
     assert process.stdout is not None
     port = int(process.stdout.readline().strip())
@@ -193,8 +222,11 @@ def main():
             cols,
             height,
             env_extra={
+                # Hermetic: the developer's own config must not be what runs
+                # here, or a stale key in it fails every row.
                 "XDG_CACHE_HOME": cache,
                 "XDG_STATE_HOME": os.path.join(cache, "state"),
+                "XDG_CONFIG_HOME": os.path.join(cache, "config"),
                 **(env_extra or {}),
             },
         )
@@ -215,19 +247,21 @@ def main():
     try:
         check(
             "sixel, 104x30",
-            library + ["--art=sixel", "--player=null"],
+            library + ["--player=null"],
             lambda raw, text: bool(SIXEL.search(raw)) and "Albums · random" in text,
             expect_blobs=True,
+            env_extra=SIXEL_TERM,
         )
         check(
             "kitty, 104x30",
-            library + ["--art=kitty", "--player=null"],
+            library + ["--player=null"],
             lambda raw, text: bool(KITTY.search(raw)) and "Albums" in text,
             expect_blobs=True,
+            env_extra=KITTY_TERM,
         )
         check(
             "symbols, 104x30",
-            library + ["--art=symbols", "--player=null"],
+            library + ["--player=null"],
             # Symbol art is cells: no graphics escape, and the placeholder is
             # gone because a real cover took its place. Which glyphs chafa picks
             # depends on the font it thinks it has, so the placeholder's absence
@@ -237,33 +271,29 @@ def main():
             and "▚" not in text
             and "Fixture One" in text,
             expect_blobs=True,
-        )
-        check(
-            "no art at all",
-            library + ["--no-art", "--player=null"],
-            lambda raw, text: not SIXEL.search(raw)
-            and not KITTY.search(raw)
-            and "▚" in text,  # the cover slot keeps its placeholder
-            expect_blobs=False,
+            env_extra=SYMBOLS_TERM,
         )
         check(
             "narrow, 60x24",
-            local + ["--art=symbols", "--player=null"],
+            local + ["--player=null"],
             lambda raw, text: "Albums" in text and "Albums   1" not in text,
             cols=60,
             height=24,
+            env_extra=SYMBOLS_TERM,
         )
         check(
             "too small, 18x4",
-            local + ["--art=symbols", "--player=null"],
+            local + ["--player=null"],
             lambda raw, text: "small" in text.lower() or "resize" in text.lower(),
             cols=18,
             height=4,
+            env_extra=SYMBOLS_TERM,
         )
         check(
             "dead server",
-            local + ["--art=symbols", "--player=null"],
+            local + ["--player=null"],
             lambda raw, text: "cannot reach" in text and "Albums" in text,
+            env_extra=SYMBOLS_TERM,
         )
         # A config naming a player that does not exist. PATH starvation cannot
         # test this under the Nix wrapper, which puts mpv back on PATH itself.
@@ -279,8 +309,9 @@ def main():
             )
         check(
             "missing player",
-            ["--config", config, "--art=symbols"],
+            ["--config", config],
             lambda raw, text: "mpv unavailable" in text and "Albums" in text,
+            env_extra=SYMBOLS_TERM,
         )
     finally:
         if fixture:

@@ -18,14 +18,6 @@ pub struct Args {
     #[arg(long, short = 'c', env = "UNDERTONE_CONFIG")]
     pub config: Option<String>,
 
-    /// Force an art backend: auto, sixel, kitty, symbols, off.
-    #[arg(long)]
-    pub art: Option<String>,
-
-    /// Disable album art entirely.
-    #[arg(long)]
-    pub no_art: bool,
-
     /// Audio backend: mpv (default) or null (no sound, for testing).
     #[arg(long, default_value = "mpv")]
     pub player: String,

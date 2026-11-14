@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use undertone::app::App;
 use undertone::art::ArtService;
-use undertone::config::Settings;
+use undertone::config::{Palette, Settings};
 use undertone::player::NullPlayer;
 use undertone::render::{ArtProtocol, CellSize};
 use undertone::subsonic::{SubsonicClient, SubsonicConfig};
@@ -91,10 +91,7 @@ fn app_on(server: &FakeServer) -> App {
         password: "demo".into(),
         scrobble: false,
         auto_dj: false,
-        art_mode: "off".into(),
-        cover_colors: 16,
-        thumb_colors: 16,
-        transcode: false,
+        palette: Palette::Partial,
         backdrop: [0, 0, 0],
         cache_dir: std::path::PathBuf::from("/tmp/undertone-paging"),
         cache_bytes: 1 << 20,

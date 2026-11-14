@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use super::protocol::ArtProtocol;
+use crate::config::Palette;
 use crate::process::detach_from_terminal;
 
 /// Keep chafa away from the controlling terminal.
@@ -28,7 +29,7 @@ pub enum RenderError {
     Chafa(String),
     #[error("chafa produced {got} images, expected {expected}")]
     SplitMismatch { expected: usize, got: usize },
-    #[error("requests in one batch must share size and colour depth")]
+    #[error("requests in one batch must share size and palette")]
     MixedBatch,
     #[error("io: {0}")]
     Io(String),
@@ -40,22 +41,22 @@ pub struct RenderRequest {
     pub source: PathBuf,
     pub cols: u32,
     pub rows: u32,
-    pub colors: u32,
+    pub palette: Palette,
 }
 
 impl RenderRequest {
-    pub fn new(source: impl Into<PathBuf>, cols: u32, rows: u32, colors: u32) -> Self {
+    pub fn new(source: impl Into<PathBuf>, cols: u32, rows: u32, palette: Palette) -> Self {
         Self {
             source: source.into(),
             cols,
             rows,
-            colors,
+            palette,
         }
     }
 
     /// Requests can share a chafa invocation only if these match.
-    pub fn batch_shape(&self) -> (u32, u32, u32) {
-        (self.cols, self.rows, self.colors)
+    pub fn batch_shape(&self) -> (u32, u32, Palette) {
+        (self.cols, self.rows, self.palette)
     }
 }
 
@@ -93,7 +94,7 @@ impl ChafaRenderer {
             .arg("--size")
             .arg(format!("{}x{}", request.cols, request.rows))
             .arg("--colors")
-            .arg(request.colors.to_string())
+            .arg(request.palette.chafa_colors())
             .arg(&request.source)
             // Never let chafa inherit the terminal's stdin: a child reading it
             // would steal keystrokes from the UI.
@@ -117,7 +118,7 @@ impl ArtRenderer for ChafaRenderer {
     }
 
     fn render(&self, requests: &[RenderRequest]) -> Result<Vec<Vec<u8>>, RenderError> {
-        if requests.is_empty() || self.protocol == ArtProtocol::Off {
+        if requests.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -155,7 +156,7 @@ impl ArtRenderer for ChafaRenderer {
             .arg("--size")
             .arg(format!("{}x{}", shape.0, shape.1))
             .arg("--colors")
-            .arg(shape.2.to_string())
+            .arg(shape.2.chafa_colors())
             .stdin(std::process::Stdio::null());
         for request in requests {
             command.arg(&request.source);
@@ -192,9 +193,7 @@ impl ArtRenderer for ChafaRenderer {
 pub fn split_sequences(output: &[u8], protocol: ArtProtocol) -> Vec<Vec<u8>> {
     let (start, end): (&[u8], &[u8]) = match protocol {
         ArtProtocol::Sixel => (b"\x1bP", b"\x1b\\"),
-        ArtProtocol::Kitty | ArtProtocol::Symbols | ArtProtocol::Off => {
-            return vec![output.to_vec()]
-        }
+        ArtProtocol::Kitty | ArtProtocol::Symbols => return vec![output.to_vec()],
     };
 
     let mut parts = Vec::new();
@@ -301,8 +300,8 @@ mod tests {
         }
         let renderer = ChafaRenderer::with_default_binary(ArtProtocol::Kitty);
         let requests = vec![
-            RenderRequest::new(TEST_IMAGE, 2, 2, 16),
-            RenderRequest::new(TEST_IMAGE, 2, 2, 16),
+            RenderRequest::new(TEST_IMAGE, 2, 2, Palette::Partial),
+            RenderRequest::new(TEST_IMAGE, 2, 2, Palette::Partial),
         ];
         let blobs = renderer.render(&requests).expect("render");
         assert_eq!(blobs.len(), 2, "two images, two processes");
@@ -359,8 +358,8 @@ mod tests {
         }
         let renderer = ChafaRenderer::with_default_binary(ArtProtocol::Sixel);
         let requests = vec![
-            RenderRequest::new(TEST_IMAGE, 4, 3, 16),
-            RenderRequest::new(TEST_IMAGE, 4, 3, 16),
+            RenderRequest::new(TEST_IMAGE, 4, 3, Palette::Partial),
+            RenderRequest::new(TEST_IMAGE, 4, 3, Palette::Partial),
         ];
         let blobs = renderer.render(&requests).expect("render");
         assert_eq!(blobs.len(), 2);
@@ -378,16 +377,16 @@ mod tests {
         }
         let renderer = ChafaRenderer::with_default_binary(ArtProtocol::Sixel);
         let cheap = renderer
-            .render(&[RenderRequest::new(TEST_IMAGE, 4, 3, 16)])
-            .expect("16 colours");
+            .render(&[RenderRequest::new(TEST_IMAGE, 4, 3, Palette::Partial)])
+            .expect("partial palette");
         let rich = renderer
-            .render(&[RenderRequest::new(TEST_IMAGE, 4, 3, 256)])
-            .expect("256 colours");
+            .render(&[RenderRequest::new(TEST_IMAGE, 4, 3, Palette::Full)])
+            .expect("full palette");
         // Measured ratio on real art is roughly 8x; assert the direction and
         // that it is substantial, not an exact number.
         assert!(
             rich[0].len() > cheap[0].len() * 3,
-            "256 colours ({}) should dwarf 16 colours ({})",
+            "full palette ({}) should dwarf partial ({})",
             rich[0].len(),
             cheap[0].len()
         );
@@ -397,8 +396,8 @@ mod tests {
     fn mixed_sizes_are_refused() {
         let renderer = ChafaRenderer::with_default_binary(ArtProtocol::Sixel);
         let requests = vec![
-            RenderRequest::new(TEST_IMAGE, 4, 3, 16),
-            RenderRequest::new(TEST_IMAGE, 8, 6, 16),
+            RenderRequest::new(TEST_IMAGE, 4, 3, Palette::Partial),
+            RenderRequest::new(TEST_IMAGE, 8, 6, Palette::Partial),
         ];
         assert!(matches!(
             renderer.render(&requests),
@@ -407,24 +406,20 @@ mod tests {
     }
 
     #[test]
-    fn off_protocol_renders_nothing() {
-        let renderer = ChafaRenderer::with_default_binary(ArtProtocol::Off);
-        assert!(renderer
-            .render(&[RenderRequest::new(TEST_IMAGE, 4, 3, 16)])
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
     fn missing_source_is_an_error_not_a_panic() {
         let renderer = ChafaRenderer::with_default_binary(ArtProtocol::Sixel);
-        let result = renderer.render(&[RenderRequest::new("/nonexistent/nope.jpg", 4, 3, 16)]);
+        let result = renderer.render(&[RenderRequest::new(
+            "/nonexistent/nope.jpg",
+            4,
+            3,
+            Palette::Partial,
+        )]);
         assert!(result.is_err());
     }
 
     #[test]
     fn path_type_is_used_for_sources() {
-        let request = RenderRequest::new(std::path::Path::new("x.jpg"), 1, 1, 16);
+        let request = RenderRequest::new(std::path::Path::new("x.jpg"), 1, 1, Palette::Partial);
         assert_eq!(request.source, PathBuf::from("x.jpg"));
     }
 }

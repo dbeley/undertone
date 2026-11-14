@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use undertone::app::{App, View};
 use undertone::art::ArtService;
-use undertone::config::Settings;
+use undertone::config::{Palette, Settings};
 use undertone::player::NullPlayer;
 use undertone::render::{ArtProtocol, CellSize};
 use undertone::subsonic::{SubsonicClient, SubsonicConfig};
@@ -27,17 +27,14 @@ fn app() -> App {
         password: "demo".to_string(),
         scrobble: false,
         auto_dj: false,
-        art_mode: "off".to_string(),
-        thumb_colors: 16,
-        cover_colors: 240,
+        palette: Palette::Partial,
         cache_dir: PathBuf::from("/tmp/undertone-live-test"),
         cache_bytes: 1024 * 1024,
         mpv_binary: PathBuf::from("mpv"),
-        transcode: false,
         backdrop: [0, 0, 0],
     };
     let art = ArtService::from_settings(
-        ArtProtocol::Off,
+        ArtProtocol::Symbols,
         &settings.cache_dir,
         settings.cache_bytes,
         None,
@@ -48,7 +45,7 @@ fn app() -> App {
         settings,
         Box::new(NullPlayer::new()),
         art,
-        ArtProtocol::Off,
+        ArtProtocol::Symbols,
         CellSize::FALLBACK,
         70,
         undertone::listen_later::ListenLater::load(

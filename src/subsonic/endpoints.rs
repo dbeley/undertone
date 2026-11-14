@@ -264,20 +264,12 @@ impl SubsonicClient {
         self.get_bytes("getCoverArt", &params)
     }
 
-    /// A stream URL, authenticated at call time.
+    /// A stream URL for the original file, authenticated at call time.
     ///
-    /// `max_bit_rate` / `format` request server-side transcoding; pass `None`
-    /// for the original file.
-    pub fn stream_url(&self, id: &str, max_bit_rate: Option<u32>, format: Option<&str>) -> String {
-        let bitrate = max_bit_rate.map(|b| b.to_string());
-        let mut params: Vec<(&str, &str)> = vec![("id", id)];
-        if let Some(bitrate) = bitrate.as_deref() {
-            params.push(("maxBitRate", bitrate));
-        }
-        if let Some(format) = format {
-            params.push(("format", format));
-        }
-        self.build_url("stream", &params)
+    /// No `maxBitRate` or `format`: the server sends what it stores, and the
+    /// only thing that ever decoded it was mpv.
+    pub fn stream_url(&self, id: &str) -> String {
+        self.build_url("stream", &[("id", id)])
     }
 }
 
@@ -314,28 +306,16 @@ mod tests {
     }
 
     #[test]
-    fn stream_url_without_transcode_has_no_format_param() {
+    fn stream_url_asks_for_the_original() {
         let client = SubsonicClient::new(super::super::SubsonicConfig {
             server: "https://x.test".into(),
             username: "u".into(),
             password: "p".into(),
         });
-        let url = client.stream_url("abc", None, None);
+        let url = client.stream_url("abc");
         assert!(url.contains("/rest/stream.view?"));
         assert!(url.contains("id=abc"));
         assert!(!url.contains("format="));
         assert!(!url.contains("maxBitRate="));
-    }
-
-    #[test]
-    fn stream_url_with_transcode_carries_params() {
-        let client = SubsonicClient::new(super::super::SubsonicConfig {
-            server: "https://x.test".into(),
-            username: "u".into(),
-            password: "p".into(),
-        });
-        let url = client.stream_url("abc", Some(192), Some("mp3"));
-        assert!(url.contains("maxBitRate=192"));
-        assert!(url.contains("format=mp3"));
     }
 }

@@ -125,7 +125,7 @@ impl Painter {
     /// The common case — music playing, nothing moving — returns an empty plan.
     pub fn plan(&mut self, desired: &[Placement]) -> FramePlan {
         // Only pixel protocols place images; symbols are drawn as cells by
-        // ratatui and `off` draws nothing.
+        // ratatui.
         if !self.protocol.is_pixel() {
             self.painted.clear();
             return FramePlan::default();
@@ -256,12 +256,6 @@ mod tests {
         let plan = painter.plan(&[place("a", 0, 0)]);
         assert!(plan.is_empty());
         assert!(painter.painted().is_empty());
-    }
-
-    #[test]
-    fn off_mode_never_places_pixels() {
-        let mut painter = Painter::new(ArtProtocol::Off);
-        assert!(painter.plan(&[place("a", 0, 0)]).is_empty());
     }
 
     #[test]

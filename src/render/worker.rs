@@ -19,6 +19,7 @@ use super::chafa::{sixel_dimensions, ArtRenderer, RenderRequest};
 use super::clear;
 use super::images::ImageCache;
 use super::protocol::ArtProtocol;
+use crate::config::Palette;
 
 /// Upper bound on images per chafa invocation.
 ///
@@ -61,7 +62,7 @@ pub struct Job {
     pub cover_id: String,
     pub cols: u32,
     pub rows: u32,
-    pub colors: u32,
+    pub palette: Palette,
     pub priority: u8,
 }
 
@@ -71,14 +72,14 @@ impl Job {
         cover_id: impl Into<String>,
         cols: u32,
         rows: u32,
-        colors: u32,
+        palette: Palette,
     ) -> Self {
         Self {
             key: key.into(),
             cover_id: cover_id.into(),
             cols,
             rows,
-            colors,
+            palette,
             priority: PRIORITY_VISIBLE,
         }
     }
@@ -88,16 +89,16 @@ impl Job {
         cover_id: impl Into<String>,
         cols: u32,
         rows: u32,
-        colors: u32,
+        palette: Palette,
     ) -> Self {
         Self {
             priority: PRIORITY_PREFETCH,
-            ..Self::visible(key, cover_id, cols, rows, colors)
+            ..Self::visible(key, cover_id, cols, rows, palette)
         }
     }
 
-    fn shape(&self) -> (u32, u32, u32) {
-        (self.cols, self.rows, self.colors)
+    fn shape(&self) -> (u32, u32, Palette) {
+        (self.cols, self.rows, self.palette)
     }
 
     /// The image we need, in pixels.
@@ -344,7 +345,7 @@ fn worker_loop(
                 images.path_for(&image_key),
                 job.cols,
                 job.rows,
-                job.colors,
+                job.palette,
             ));
         }
 
@@ -400,7 +401,7 @@ fn take_batch(shared: &Arc<(Mutex<Shared>, Condvar)>) -> Option<Vec<Job>> {
     guard.queue.sort_by_key(|job| job.priority);
 
     let mut batch: Vec<Job> = Vec::with_capacity(MAX_BATCH);
-    let mut shape: Option<(u32, u32, u32)> = None;
+    let mut shape: Option<(u32, u32, Palette)> = None;
     let mut index = 0;
     while index < guard.queue.len() && batch.len() < MAX_BATCH {
         let candidate = guard.queue[index].shape();
@@ -550,8 +551,8 @@ mod tests {
     #[test]
     fn renders_submitted_jobs_and_batches_them() {
         let (mut worker, calls, batch, fetches) = spawn("basic", Duration::ZERO, false);
-        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
-        worker.submit(Job::visible("b", "cover-b", 4, 3, 16));
+        worker.submit(Job::visible("a", "cover-a", 4, 3, Palette::Partial));
+        worker.submit(Job::visible("b", "cover-b", 4, 3, Palette::Partial));
 
         let done = collect(&worker, 2);
         assert_eq!(done.len(), 2);
@@ -564,11 +565,11 @@ mod tests {
     #[test]
     fn a_repeat_request_is_served_from_cache_without_refetching() {
         let (mut worker, calls, _, fetches) = spawn("cachehit", Duration::ZERO, false);
-        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
+        worker.submit(Job::visible("a", "cover-a", 4, 3, Palette::Partial));
         let first = collect(&worker, 1);
         assert!(!first[0].from_cache);
 
-        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
+        worker.submit(Job::visible("a", "cover-a", 4, 3, Palette::Partial));
         let second = collect(&worker, 1);
         assert!(second[0].from_cache);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "no second render");
@@ -579,8 +580,8 @@ mod tests {
     #[test]
     fn different_shapes_do_not_share_a_batch() {
         let (mut worker, calls, _, _) = spawn("shapes", Duration::ZERO, false);
-        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
-        worker.submit(Job::visible("b", "cover-b", 8, 6, 16));
+        worker.submit(Job::visible("a", "cover-a", 4, 3, Palette::Partial));
+        worker.submit(Job::visible("b", "cover-b", 8, 6, Palette::Partial));
         let done = collect(&worker, 2);
         assert_eq!(done.len(), 2);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -590,8 +591,8 @@ mod tests {
     #[test]
     fn a_missing_cover_is_skipped_not_fatal() {
         let (mut worker, calls, _, fetches) = spawn("nofetch", Duration::ZERO, true);
-        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
-        worker.submit(Job::visible("b", "cover-b", 4, 3, 16));
+        worker.submit(Job::visible("a", "cover-a", 4, 3, Palette::Partial));
+        worker.submit(Job::visible("b", "cover-b", 4, 3, Palette::Partial));
         let done = collect(&worker, 2);
         assert!(done.is_empty(), "nothing to render without source bytes");
         assert_eq!(fetches.load(Ordering::SeqCst), 2);
@@ -602,9 +603,9 @@ mod tests {
     #[test]
     fn cancelling_drops_queued_work() {
         let (mut worker, calls, _, _) = spawn("cancel", Duration::from_millis(150), false);
-        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
+        worker.submit(Job::visible("a", "cover-a", 4, 3, Palette::Partial));
         std::thread::sleep(Duration::from_millis(40));
-        worker.submit(Job::visible("b", "cover-b", 4, 3, 16));
+        worker.submit(Job::visible("b", "cover-b", 4, 3, Palette::Partial));
         worker.cancel(&["b".to_string()]);
 
         let done = collect(&worker, 1);
@@ -624,10 +625,10 @@ mod tests {
     #[test]
     fn priority_puts_visible_work_first() {
         let (mut worker, _, _, _) = spawn("priority", Duration::from_millis(80), false);
-        worker.submit(Job::visible("busy", "cover-0", 4, 3, 16));
+        worker.submit(Job::visible("busy", "cover-0", 4, 3, Palette::Partial));
         std::thread::sleep(Duration::from_millis(20));
-        worker.submit(Job::prefetch("later", "cover-1", 4, 3, 16));
-        worker.submit(Job::visible("now", "cover-2", 4, 3, 16));
+        worker.submit(Job::prefetch("later", "cover-1", 4, 3, Palette::Partial));
+        worker.submit(Job::visible("now", "cover-2", 4, 3, Palette::Partial));
 
         let done = collect(&worker, 3);
         let first_after_busy = done.iter().map(|d| d.key.as_str()).find(|k| *k != "busy");
@@ -638,11 +639,11 @@ mod tests {
     #[test]
     fn shutdown_is_idempotent_and_stops_the_thread() {
         let (mut worker, _, _, _) = spawn("shutdown", Duration::ZERO, false);
-        worker.submit(Job::visible("a", "cover-a", 4, 3, 16));
+        worker.submit(Job::visible("a", "cover-a", 4, 3, Palette::Partial));
         worker.shutdown();
         worker.shutdown();
         assert_eq!(worker.pending(), 0);
-        worker.submit(Job::visible("b", "cover-b", 4, 3, 16));
+        worker.submit(Job::visible("b", "cover-b", 4, 3, Palette::Partial));
         assert_eq!(worker.pending(), 0);
     }
 }

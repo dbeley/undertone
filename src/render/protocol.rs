@@ -9,8 +9,6 @@ pub enum ArtProtocol {
     Kitty,
     /// Anything else, including multiplexers: Unicode cells.
     Symbols,
-    /// Art disabled entirely.
-    Off,
 }
 
 impl ArtProtocol {
@@ -19,17 +17,6 @@ impl ArtProtocol {
             Self::Sixel => "sixel",
             Self::Kitty => "kitty",
             Self::Symbols => "symbols",
-            Self::Off => "off",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "sixel" => Some(Self::Sixel),
-            "kitty" => Some(Self::Kitty),
-            "symbols" => Some(Self::Symbols),
-            "off" | "none" => Some(Self::Off),
-            _ => None,
         }
     }
 
@@ -234,19 +221,10 @@ mod tests {
     }
 
     #[test]
-    fn protocol_parsing_accepts_expected_names() {
-        assert_eq!(ArtProtocol::parse("sixel"), Some(ArtProtocol::Sixel));
-        assert_eq!(ArtProtocol::parse(" KITTY "), Some(ArtProtocol::Kitty));
-        assert_eq!(ArtProtocol::parse("off"), Some(ArtProtocol::Off));
-        assert_eq!(ArtProtocol::parse("nonsense"), None);
-    }
-
-    #[test]
     fn only_pixel_protocols_use_the_painter() {
         assert!(ArtProtocol::Sixel.is_pixel());
         assert!(ArtProtocol::Kitty.is_pixel());
         assert!(!ArtProtocol::Symbols.is_pixel());
-        assert!(!ArtProtocol::Off.is_pixel());
     }
 
     #[test]

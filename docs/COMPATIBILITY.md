@@ -10,7 +10,6 @@ case                result
 sixel, 104x30       ok
 kitty, 104x30       ok
 symbols, 104x30     ok
-no art at all       ok
 narrow, 60x24       ok
 too small, 18x4     ok
 dead server         ok
@@ -24,12 +23,16 @@ and takes about a minute. `--live` points the same rows at a real server
 
 ## Art protocols
 
-| Setting | What is drawn | Verified |
+There is no art mode to set: the terminal is asked, once, and the answer is
+used for every cover. `scripts/degradation.py` selects each row the same way a
+real terminal would, by setting `TERM_PROGRAM` (or `TERM`) before it starts the
+binary, so the detection itself is what is under test.
+
+| Terminal | What is drawn | Verified |
 | --- | --- | --- |
-| `--art=sixel` | sixel frames, cached as blobs, deleted by overpaint | sixel escape in the stream, thumbnails on disk |
-| `--art=kitty` | kitty APC images, tagged with an id and deleted by id | APC escape in the stream, thumbnails on disk |
-| `--art=symbols` | characters and colour, drawn as cells | chafa glyphs on screen, thumbnails on disk |
-| `--no-art` | nothing; the cover slot keeps its placeholder | no graphics escapes, **no thumbnails fetched** |
+| foot (`TERM_PROGRAM=foot`) | sixel frames, cached as blobs, deleted by overpaint | sixel escape in the stream, thumbnails on disk |
+| kitty, ghostty, WezTerm (`TERM_PROGRAM=kitty`) | kitty APC images, tagged with an id and deleted by id | APC escape in the stream, thumbnails on disk |
+| anything else, and every multiplexer | characters and colour, drawn as cells | chafa glyphs on screen, thumbnails on disk |
 
 Symbol art is the fallback that matters most: a framebuffer console and any
 terminal without graphics support both land there. It is drawn through ratatui
@@ -57,15 +60,15 @@ queue list stay.
 | server unreachable at startup | warning naming the URL, empty list, `R` retries | `dead server` row, `tests/errors.rs` |
 | wrong password | warning, empty list, no crash | `tests/errors.rs` |
 | server returns HTML or garbage | decode error naming the endpoint | `tests/errors.rs` |
-| art cache unwritable | art off, a warning, everything else works | `tests/errors.rs` |
+| art cache unwritable | a warning, the cache moves to `$TMPDIR`, everything else works | `tests/errors.rs` |
 | `mpv` missing | silent player, warning, browsing still works | `missing player` row, `tests/errors.rs` |
-| `chafa` missing | art off, a warning | `tests/errors.rs` |
+| `chafa` missing | covers keep their placeholder; browsing and playback are unaffected | — |
 | a track fails mid-playlist | message, playback moves on | `tests/errors.rs`, `src/app.rs` |
 
 What the interface looks like is in `docs/SCREENS.md`, rendered from the real
-binary by `scripts/screens.py`. Those frames run with `--no-art` so they are
-identical on every machine and CI can diff them; the art itself is what the
-table above asserts.
+binary by `scripts/screens.py`. Those frames run against a fixture server with
+no cover art, so they are identical on every machine and CI can diff them; the
+art itself is what the table above asserts.
 
 ## Build targets
 

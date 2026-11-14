@@ -16,7 +16,7 @@ use ratatui::Terminal;
 use undertone::app::App;
 use undertone::art::{ArtService, SubsonicImageSource};
 use undertone::cli;
-use undertone::config::{CliOverrides, Config, Settings};
+use undertone::config::{CliOverrides, Config};
 use undertone::event::{Events, Input};
 use undertone::listen_later::ListenLater;
 use undertone::player::{MpvOptions, MpvPlayer, NullPlayer, Player};
@@ -96,7 +96,6 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         CliOverrides {
             server: args.server.clone(),
             username: args.username.clone(),
-            art: args.art.clone(),
         },
         &env,
     )?;
@@ -121,39 +120,36 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let mut protocol = resolve_protocol(&args, &settings);
+    // The terminal decides how images are drawn: sixel for foot, kitty for
+    // kitty/ghostty/WezTerm, chafa's Unicode art for anything else.
+    let protocol = Caps::detect(None).protocol;
 
-    let make_source = |protocol: ArtProtocol| -> Option<Arc<dyn ImageSource>> {
-        // Symbol art is encoded from the same downloaded cover; only "off"
-        // needs no images at all.
-        if !matches!(protocol, ArtProtocol::Off) {
-            // Ask the server for pre-scaled art so the weak device never
-            // decodes a full-size image.
-            Some(Arc::new(SubsonicImageSource::new(client.clone())))
-        } else {
-            None
-        }
+    // Symbol art is encoded from the same downloaded cover, so every protocol
+    // wants the image. Asking the server for pre-scaled art means the weak
+    // device never decodes a full-size image.
+    let make_source = || -> Option<Arc<dyn ImageSource>> {
+        Some(Arc::new(SubsonicImageSource::new(client.clone())))
     };
 
     let mut art = ArtService::from_settings(
         protocol,
         &settings.cache_dir,
         settings.cache_bytes,
-        make_source(protocol),
+        make_source(),
     );
     if art.is_err() {
-        // An unusable cache directory is a reason to lose art, not to lose the
-        // player. Retry somewhere writable with art switched off.
+        // An unusable cache directory is a reason to lose the cached blobs,
+        // not to lose art or the player: retry somewhere writable.
         startup_warnings.push(format!(
-            "art cache unusable ({}) — art off",
-            settings.cache_dir.display()
+            "art cache unusable ({}) — using {}",
+            settings.cache_dir.display(),
+            std::env::temp_dir().join("undertone-art").display()
         ));
-        protocol = ArtProtocol::Off;
         art = ArtService::from_settings(
-            ArtProtocol::Off,
+            protocol,
             &std::env::temp_dir().join("undertone-art"),
             1 << 20,
-            None,
+            make_source(),
         );
     }
     let art = art?;
@@ -264,19 +260,6 @@ fn state_dir() -> Option<std::path::PathBuf> {
         ),
     };
     Some(std::path::PathBuf::from(base).join("undertone"))
-}
-
-fn resolve_protocol(args: &cli::Args, settings: &Settings) -> ArtProtocol {
-    if args.no_art {
-        return ArtProtocol::Off;
-    }
-    if let Some(mode) = args.art.as_deref().and_then(ArtProtocol::parse) {
-        return mode;
-    }
-    if let Some(mode) = ArtProtocol::parse(&settings.art_mode) {
-        return mode;
-    }
-    Caps::detect(None).protocol
 }
 
 fn setup_terminal() -> Result<ui::Term, Box<dyn std::error::Error>> {

@@ -75,17 +75,18 @@ class App:
 
 def main():
     binary = sys.argv[1] if len(sys.argv) > 1 else "./target/release/undertone"
-    fixture, server = start_fixture()
+    # No covers: the fixture's art is a gradient chafa turns into characters
+    # picked from whatever font it detects, which differs between machines.
+    # With 404s the cover slots keep their placeholder, so the frames are the
+    # same everywhere and CI can diff them. Art is covered by the degradation
+    # matrix, which asserts on protocols rather than on glyphs.
+    fixture, server = start_fixture(["--no-covers"])
 
     shots = []
     try:
         app = App(
             binary,
-            # No art on purpose: these frames document the layout, and artwork
-            # is drawn with characters chafa picks from the font it detects, so
-            # it differs between machines. Art is covered by the degradation
-            # matrix, which asserts on protocols rather than on glyphs.
-            ["--player=null", "--no-art", "--server", server, "--username", "demo"],
+            ["--player=null", "--server", server, "--username", "demo"],
             state_dir=tempfile.mkdtemp(prefix="undertone-screens-"),
         )
         app.wait(6)
@@ -150,8 +151,8 @@ def main():
         "interface draws. Regenerate with",
         "`python3 scripts/screens.py ./target/release/undertone`.",
         "",
-        "Covers are shown as their placeholder slot: the generator runs with",
-        "`--no-art` so these frames are identical on every machine and CI can",
+        "Covers are shown as their placeholder slot: the fixture server serves no",
+        "cover art, so these frames are identical on every machine and CI can",
         "diff them. What the art itself looks like in each protocol is in",
         "`docs/COMPATIBILITY.md`, and is asserted there rather than drawn here.",
         "",

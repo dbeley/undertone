@@ -46,16 +46,40 @@ pub struct Config {
     pub player: PlayerConfig,
 }
 
+/// How many colours a cover may use, as a chafa preset.
+///
+/// Presets rather than free colour counts: chafa rejects anything outside its
+/// fixed list, and the byte cost between them is an order of magnitude — a
+/// `full` cover is 7-10x the size of a `partial` one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Palette {
+    /// Two colours: chafa's black-and-white dither.
+    Grayscale,
+    /// Sixteen colours, ~11 KB a cover: what keeps the wall scrolling.
+    #[default]
+    Partial,
+    /// 24-bit colour: faithful, and the largest blobs.
+    Full,
+}
+
+impl Palette {
+    /// The `--colors` value chafa accepts for this preset.
+    pub fn chafa_colors(self) -> &'static str {
+        match self {
+            Self::Grayscale => "2",
+            Self::Partial => "16",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtConfig {
-    /// auto | sixel | kitty | symbols | off
-    #[serde(default = "default_art_mode")]
-    pub mode: String,
-    #[serde(default = "default_thumb_colors")]
-    pub thumb_colors: u32,
-    #[serde(default = "default_cover_colors")]
-    pub cover_colors: u32,
+    /// grayscale | partial | full, for every cover on every screen.
+    #[serde(default)]
+    pub palette: Palette,
     #[serde(default = "default_cache_mb")]
     pub cache_mb: u64,
     /// Colour painted over a cover that is being removed, as `#rrggbb`.
@@ -69,9 +93,7 @@ pub struct ArtConfig {
 impl Default for ArtConfig {
     fn default() -> Self {
         Self {
-            mode: default_art_mode(),
-            thumb_colors: default_thumb_colors(),
-            cover_colors: default_cover_colors(),
+            palette: Palette::default(),
             cache_mb: default_cache_mb(),
             backdrop: default_backdrop(),
         }
@@ -83,22 +105,12 @@ impl Default for ArtConfig {
 pub struct PlayerConfig {
     #[serde(default = "default_mpv")]
     pub mpv: String,
-    /// never | mp3-192
-    #[serde(default = "default_transcode")]
-    pub transcode: String,
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self {
-            mpv: default_mpv(),
-            transcode: default_transcode(),
-        }
+        Self { mpv: default_mpv() }
     }
-}
-
-fn default_art_mode() -> String {
-    "auto".to_string()
 }
 
 fn default_backdrop() -> String {
@@ -115,12 +127,6 @@ pub fn parse_backdrop(value: &str) -> [u8; 3] {
     [channel(0..2), channel(2..4), channel(4..6)]
 }
 
-fn default_thumb_colors() -> u32 {
-    16
-}
-fn default_cover_colors() -> u32 {
-    240
-}
 fn default_cache_mb() -> u64 {
     20
 }
@@ -139,9 +145,6 @@ pub fn cache_dir(env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
 fn default_mpv() -> String {
     "mpv".to_string()
 }
-fn default_transcode() -> String {
-    "never".to_string()
-}
 
 /// Fully resolved runtime settings.
 #[derive(Debug, Clone)]
@@ -151,13 +154,10 @@ pub struct Settings {
     pub password: String,
     pub scrobble: bool,
     pub auto_dj: bool,
-    pub art_mode: String,
-    pub thumb_colors: u32,
-    pub cover_colors: u32,
+    pub palette: Palette,
     pub cache_dir: PathBuf,
     pub cache_bytes: u64,
     pub mpv_binary: PathBuf,
-    pub transcode: bool,
     /// Colour used to overpaint a removed cover under sixel.
     pub backdrop: [u8; 3],
 }
@@ -228,13 +228,10 @@ impl Config {
             password,
             scrobble: self.scrobble.unwrap_or(true),
             auto_dj: self.auto_dj.unwrap_or(true),
-            art_mode: cli.art.unwrap_or(self.art.mode),
-            thumb_colors: self.art.thumb_colors,
-            cover_colors: self.art.cover_colors,
+            palette: self.art.palette,
             cache_dir,
             cache_bytes: self.art.cache_mb.saturating_mul(1024 * 1024),
             mpv_binary: PathBuf::from(self.player.mpv),
-            transcode: matches!(self.player.transcode.as_str(), "mp3" | "mp3-192"),
             backdrop: parse_backdrop(&self.art.backdrop),
         })
     }
@@ -245,7 +242,6 @@ impl Config {
 pub struct CliOverrides {
     pub server: Option<String>,
     pub username: Option<String>,
-    pub art: Option<String>,
 }
 
 fn user_config_path(env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
@@ -306,21 +302,51 @@ scrobble = false
 auto_dj = false
 
 [art]
-mode = "sixel"
-thumb_colors = 16
-cover_colors = 240
+palette = "full"
 cache_mb = 32
 
 [player]
 mpv = "/run/current-system/sw/bin/mpv"
-transcode = "mp3-192"
 "#;
         let config = Config::parse(text, Path::new("test.toml")).unwrap();
         assert_eq!(config.server.as_deref(), Some("https://music.example.org"));
         assert_eq!(config.scrobble, Some(false));
-        assert_eq!(config.art.thumb_colors, 16);
+        assert_eq!(config.art.palette, Palette::Full);
         assert_eq!(config.art.cache_mb, 32);
-        assert!(config.player.transcode.contains("192"));
+    }
+
+    #[test]
+    fn the_three_palette_presets_parse_and_nothing_else_does() {
+        assert_eq!(Palette::Grayscale.chafa_colors(), "2");
+        assert_eq!(Palette::Partial.chafa_colors(), "16");
+        assert_eq!(Palette::Full.chafa_colors(), "full");
+        // The default is the middle of the road, not the biggest.
+        assert_eq!(Palette::default(), Palette::Partial);
+
+        for (text, want) in [
+            ("grayscale", Palette::Grayscale),
+            ("partial", Palette::Partial),
+            ("full", Palette::Full),
+        ] {
+            let config =
+                Config::parse(&format!("[art]\npalette = \"{text}\"\n"), Path::new("t")).unwrap();
+            assert_eq!(config.art.palette, want, "palette = {text}");
+        }
+        assert!(Config::parse("[art]\npalette = \"240\"\n", Path::new("t")).is_err());
+    }
+
+    #[test]
+    fn retired_keys_are_rejected() {
+        // `mode`, `thumb_colors`, `cover_colors` and `player.transcode` are gone;
+        // a config still carrying them should say so rather than half-apply.
+        for text in [
+            "[art]\nmode = \"sixel\"\n",
+            "[art]\nthumb_colors = 16\n",
+            "[art]\ncover_colors = 240\n",
+            "[player]\ntranscode = \"mp3-192\"\n",
+        ] {
+            assert!(Config::parse(text, Path::new("t")).is_err(), "{text}");
+        }
     }
 
     #[test]
@@ -343,24 +369,18 @@ transcode = "mp3-192"
         );
         assert_eq!(config.scrobble, Some(true));
         assert_eq!(config.auto_dj, Some(true));
-        assert_eq!(config.art.mode, "auto");
-        assert_eq!(config.art.thumb_colors, 16);
-        assert_eq!(config.art.cover_colors, 240);
+        assert_eq!(config.art.palette, Palette::Partial);
         assert_eq!(config.art.cache_mb, 20);
         assert_eq!(config.art.backdrop, "#000000");
         assert_eq!(config.player.mpv, "mpv");
-        assert_eq!(config.player.transcode, "never");
     }
 
     #[test]
     fn a_minimal_config_gets_sensible_defaults() {
         let config = Config::parse("server = \"https://x\"\n", Path::new("t")).unwrap();
-        assert_eq!(config.art.mode, "auto");
-        assert_eq!(config.art.thumb_colors, 16);
-        assert_eq!(config.art.cover_colors, 240);
+        assert_eq!(config.art.palette, Palette::Partial);
         assert_eq!(config.art.cache_mb, 20);
         assert_eq!(config.player.mpv, "mpv");
-        assert_eq!(config.player.transcode, "never");
     }
 
     #[test]
@@ -404,14 +424,12 @@ transcode = "mp3-192"
                 CliOverrides {
                     server: Some("https://cli".into()),
                     username: None,
-                    art: Some("symbols".into()),
                 },
                 &no_env,
             )
             .unwrap();
         assert_eq!(settings.server, "https://cli");
         assert_eq!(settings.username, "file-user");
-        assert_eq!(settings.art_mode, "symbols");
     }
 
     #[test]

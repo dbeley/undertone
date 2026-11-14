@@ -11,7 +11,7 @@ use std::net::TcpListener;
 
 use undertone::app::App;
 use undertone::art::ArtService;
-use undertone::config::Settings;
+use undertone::config::{Palette, Settings};
 use undertone::player::{MpvOptions, MpvPlayer, NullPlayer};
 use undertone::render::{ArtProtocol, CellSize};
 use undertone::subsonic::{SubsonicClient, SubsonicConfig, SubsonicError};
@@ -50,13 +50,10 @@ fn settings_for(server: &str) -> Settings {
         password: "demo".into(),
         scrobble: false,
         auto_dj: false,
-        art_mode: "off".into(),
-        thumb_colors: 16,
-        cover_colors: 16,
+        palette: Palette::Partial,
         cache_dir: std::env::temp_dir().join("undertone-errors-cache"),
         cache_bytes: 1 << 20,
         mpv_binary: std::path::PathBuf::from("mpv"),
-        transcode: false,
         backdrop: [0, 0, 0],
     }
 }
@@ -70,13 +67,13 @@ fn app_for(server: &str) -> App {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let art = ArtService::from_settings(ArtProtocol::Off, &dir, 1 << 20, None).expect("art");
+    let art = ArtService::from_settings(ArtProtocol::Symbols, &dir, 1 << 20, None).expect("art");
     App::new(
         client_for(server),
         settings_for(server),
         Box::new(NullPlayer::new()),
         art,
-        ArtProtocol::Off,
+        ArtProtocol::Symbols,
         CellSize::FALLBACK,
         70,
         undertone::listen_later::ListenLater::load(dir.join("ll.json")),

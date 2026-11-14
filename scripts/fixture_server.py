@@ -5,9 +5,12 @@ The demo server is slow and sometimes gone; this answers the handful of
 endpoints the interface uses, with three albums and a real cover image, so a
 check can run in seconds and offline.
 
-    python3 scripts/fixture_server.py [port]
+    python3 scripts/fixture_server.py [port] [--no-covers]
 
 Prints the port it bound to on the first line, so a caller can read it.
+`--no-covers` answers `getCoverArt` with 404, which is what a screenshot run
+wants: the cover slots then keep their placeholder and the frame is the same on
+every machine.
 """
 
 import base64
@@ -85,6 +88,9 @@ def album_payload(album_id):
     }
 
 
+NO_COVERS = False
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -106,6 +112,11 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if endpoint == "getCoverArt":
+            if NO_COVERS:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             return self._send(COVER, "image/png")
         if endpoint == "stream":
             return self._send(b"\0" * 1024, "audio/flac")
@@ -176,7 +187,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    global NO_COVERS
+    NO_COVERS = "--no-covers" in sys.argv
+    ports = [a for a in sys.argv[1:] if not a.startswith("--")]
+    port = int(ports[0]) if ports else 0
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(server.server_address[1], flush=True)
     server.serve_forever()

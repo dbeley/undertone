@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use undertone::app::App;
 use undertone::art::ArtService;
-use undertone::config::Settings;
+use undertone::config::{Palette, Settings};
 use undertone::listen_later::ListenLater;
 use undertone::player::NullPlayer;
 use undertone::queue::QueueItem;
@@ -32,13 +32,10 @@ fn settings(cache: std::path::PathBuf) -> Settings {
         password: "demo".into(),
         scrobble: false,
         auto_dj: false,
-        art_mode: "sixel".into(),
-        thumb_colors: 16,
-        cover_colors: 240,
+        palette: Palette::Partial,
         cache_dir: cache,
         cache_bytes: 20 * 1024 * 1024,
         mpv_binary: std::path::PathBuf::from("mpv"),
-        transcode: false,
         backdrop: [0, 0, 0],
     }
 }

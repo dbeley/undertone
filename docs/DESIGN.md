@@ -142,7 +142,7 @@ Average blob: **955 bytes per thumbnail**, matching the 963 B measured for a sin
 ```
 src/
   main.rs                 startup: config → terminal → capability probe → run loop
-  cli.rs                  clap args (--server, --config, --no-art, --debug)
+  cli.rs                  clap args (--server, --config, --player, --debug)
   config.rs               TOML config, XDG paths, password_cmd
   app.rs                  App state + update() (the only place state mutates)
   event.rs                crossterm reader thread → mpsc; 1 Hz tick; resize
@@ -220,7 +220,7 @@ album id ──► coverArt?size=N ──► 20 MB disk image cache
 
 **Symbols mode bypasses the painter.** When the selected renderer is `symbols`, art is rasterised into cells and drawn through the ratatui buffer like ordinary text — no placements, no reconciliation. The painter only manages pixel blobs, so `symbols` mode and `off` mode have no painter cost at all.
 
-**Thumbnail strategy (D8):** rows of three text lines, covers at **16 colours**, sized in *real pixels*. chafa laid out its output in 10x20 "cells" but a terminal cell is whatever the font makes it — 16x41 on the Pocket Reform — and images are drawn at their own pixel size, so a `6x3` chafa box put a 60x60 cover inside a 96x123 slot. `App::wall` and `App::list_thumb` now divide the space by a target tile, then size the cover from the terminal's reported cell, so a cover fills its tile and each screen holds whole rows of them rather than a whole number and a blank band. Measured on the device: a 200 px 16-colour cover is **11.6 KB**, so a screenful of 21 is ~244 KB on the first paint of a screen (cached on disk; the steady state is zero bytes). That is the price of covers that fill their tiles; if it hurts on the Pi, shrink the wall with `[art] thumb_colors` or fewer columns, not the cell sizing. Settle-paint (~80 ms debounce) during fast scrolling; immediate paint on selection change.
+**Thumbnail strategy (D8):** rows of three text lines, covers at **16 colours**, sized in *real pixels*. chafa laid out its output in 10x20 "cells" but a terminal cell is whatever the font makes it — 16x41 on the Pocket Reform — and images are drawn at their own pixel size, so a `6x3` chafa box put a 60x60 cover inside a 96x123 slot. `App::wall` and `App::list_thumb` now divide the space by a target tile, then size the cover from the terminal's reported cell, so a cover fills its tile and each screen holds whole rows of them rather than a whole number and a blank band. Measured on the device: a 200 px 16-colour cover is **11.6 KB**, so a screenful of 21 is ~244 KB on the first paint of a screen (cached on disk; the steady state is zero bytes). That is the price of covers that fill their tiles; if it hurts on the Pi, shrink the wall with `[art] palette = "grayscale"` or fewer columns, not the cell sizing. Settle-paint (~80 ms debounce) during fast scrolling; immediate paint on selection change.
 
 **Detail views** (now-playing, album page): single large cover — 320 px square on a 16x41 cell — at 240 colours (measured **139 KB**), one image on screen.
 
@@ -253,15 +253,12 @@ scrobble = true
 auto_dj = true
 
 [art]
-mode = "auto"        # auto | sixel | kitty | symbols | off
-thumb_colors = 16
-cover_colors = 240
+palette = "partial"  # grayscale (2) | partial (16) | full (24-bit)
 cache_mb = 20
 backdrop = "#000000"
 
 [player]
 mpv = "mpv"
-transcode = "never"  # never | mp3-192
 ```
 
 The full annotated example lives in the README, and a test parses it so the two
@@ -437,7 +434,7 @@ Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic
 - Verify: `cargo test --release --test perf` passes on CI.
 
 **Task 6.2 — Degradation matrix** — done
-- `scripts/degradation.py` drives the real binary through a pty and asserts on the rendered screen: `sixel`, `kitty`, `symbols`, `--no-art`, 60×24, 18×4, dead server, missing player.
+- `scripts/degradation.py` drives the real binary through a pty and asserts on the rendered screen: `sixel`, `kitty`, `symbols`, 60×24, 18×4, dead server, missing player. Each row presents as its terminal through `TERM_PROGRAM`, so detection itself is what is exercised.
 - It serves its own library (`scripts/fixture_server.py`), so it needs no network, and runs in CI.
 - Results and the cases it cannot cover are in `docs/COMPATIBILITY.md`. The matrix is what found symbol art being dead in three places at once.
 

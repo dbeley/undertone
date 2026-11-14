@@ -22,8 +22,10 @@ nix develop -c cargo test --release --test perf -- --nocapture
 ```
 
 `scripts/measure.sh` opens a real pty, so it measures the app the way you
-actually run it. Pass `--player=null --art=off` after the script name for a
-floor measurement with no mpv and no image encoding.
+actually run it. Pass `--player=null` after the script name for a floor
+measurement with no mpv, and point `TERM_PROGRAM` at a terminal without
+graphics (e.g. `TERM_PROGRAM= TERM=xterm-256color`) to measure symbol art
+instead of sixel encoding.
 
 ## Measured
 

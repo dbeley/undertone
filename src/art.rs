@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::config::Palette;
 use crate::render::{
     ArtProtocol, BlobCache, ChafaRenderer, ImageCache, ImageSource, Job, RenderWorker,
 };
@@ -85,9 +86,19 @@ impl ArtService {
         self.stats
     }
 
-    /// Cache key for one rendering of a cover at one size and colour budget.
-    pub fn key(cover_id: &str, cols: u32, rows: u32, colors: u32, protocol: ArtProtocol) -> String {
-        format!("{cover_id}/{cols}x{rows}-{colors}-{}", protocol.label())
+    /// Cache key for one rendering of a cover at one size and palette.
+    pub fn key(
+        cover_id: &str,
+        cols: u32,
+        rows: u32,
+        palette: Palette,
+        protocol: ArtProtocol,
+    ) -> String {
+        format!(
+            "{cover_id}/{cols}x{rows}-{}-{}",
+            palette.chafa_colors(),
+            protocol.label()
+        )
     }
 
     /// Request art, returning its cache key. Cheap and non-blocking.
@@ -96,21 +107,20 @@ impl ArtService {
         cover_id: &str,
         cols: u32,
         rows: u32,
-        colors: u32,
+        palette: Palette,
         prefetch: bool,
     ) -> String {
-        let key = Self::key(cover_id, cols, rows, colors, self.protocol);
+        let key = Self::key(cover_id, cols, rows, palette, self.protocol);
         if self.blobs.contains_key(&key)
             || self.requested.contains(&key)
             || self.failed.contains(&key)
-            || matches!(self.protocol, ArtProtocol::Off)
         {
             return key;
         }
         let job = if prefetch {
-            Job::prefetch(key.clone(), cover_id, cols, rows, colors)
+            Job::prefetch(key.clone(), cover_id, cols, rows, palette)
         } else {
-            Job::visible(key.clone(), cover_id, cols, rows, colors)
+            Job::visible(key.clone(), cover_id, cols, rows, palette)
         };
         self.worker.submit(job);
         self.requested.insert(key.clone());
@@ -225,18 +235,20 @@ mod tests {
 
     #[test]
     fn keys_include_size_and_protocol() {
-        let a = ArtService::key("al-1", 4, 3, 16, ArtProtocol::Sixel);
-        let b = ArtService::key("al-1", 4, 3, 16, ArtProtocol::Kitty);
-        let c = ArtService::key("al-1", 8, 3, 16, ArtProtocol::Sixel);
+        let a = ArtService::key("al-1", 4, 3, Palette::Partial, ArtProtocol::Sixel);
+        let b = ArtService::key("al-1", 4, 3, Palette::Partial, ArtProtocol::Kitty);
+        let c = ArtService::key("al-1", 8, 3, Palette::Partial, ArtProtocol::Sixel);
+        let d = ArtService::key("al-1", 4, 3, Palette::Full, ArtProtocol::Sixel);
         assert_ne!(a, b);
         assert_ne!(a, c);
+        assert_ne!(a, d);
     }
 
     #[test]
     fn requesting_twice_renders_once() {
         let (mut service, calls) = service("once");
-        let key = service.request("al-1", 4, 3, 16, false);
-        let again = service.request("al-1", 4, 3, 16, false);
+        let key = service.request("al-1", 4, 3, Palette::Partial, false);
+        let again = service.request("al-1", 4, 3, Palette::Partial, false);
         assert_eq!(key, again);
 
         // `pending()` is a queue length, and the worker takes the job off the
@@ -262,7 +274,7 @@ mod tests {
     #[test]
     fn a_blob_becomes_available_after_poll() {
         let (mut service, _) = service("poll");
-        let key = service.request("al-1", 4, 3, 16, false);
+        let key = service.request("al-1", 4, 3, Palette::Partial, false);
         assert!(service.blob(&key).is_none());
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -283,21 +295,9 @@ mod tests {
             protocol: ArtProtocol::Symbols,
             ..service
         };
-        let key = service.request("al-1", 4, 3, 16, false);
+        let key = service.request("al-1", 4, 3, Palette::Partial, false);
         assert!(key.contains("symbols"));
         assert_eq!(service.pending(), 1);
-        service.shutdown();
-    }
-
-    #[test]
-    fn art_off_requests_nothing_at_all() {
-        let (service, _) = service("off");
-        let mut service = ArtService {
-            protocol: ArtProtocol::Off,
-            ..service
-        };
-        service.request("al-1", 4, 3, 16, false);
-        assert_eq!(service.pending(), 0);
         service.shutdown();
     }
 
@@ -307,7 +307,7 @@ mod tests {
         // the first batch.
         let (mut service, calls) = service("many");
         let keys: Vec<String> = (0..14)
-            .map(|i| service.request(&format!("al-{i}"), 4, 2, 16, false))
+            .map(|i| service.request(&format!("al-{i}"), 4, 2, Palette::Partial, false))
             .collect();
 
         let deadline = Instant::now() + Duration::from_secs(5);

@@ -7,7 +7,7 @@
 # that difference is the whole point.
 #
 #   ./scripts/measure.sh                       # against the demo server
-#   ./scripts/measure.sh --player=null --art=off
+#   ./scripts/measure.sh --player=null
 #
 set -euo pipefail
 

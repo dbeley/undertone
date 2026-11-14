@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use undertone::config::Palette;
 use undertone::render::{
     ArtProtocol, BlobCache, ChafaRenderer, ImageCache, ImageSource, Job, Painter, Placement,
     RenderWorker,
@@ -88,7 +89,7 @@ fn measure(worker: &mut RenderWorker, label: &str, timeout: Duration) -> Sample 
             format!("cover{i}"),
             4,
             3,
-            16,
+            Palette::Partial,
         ));
     }
 

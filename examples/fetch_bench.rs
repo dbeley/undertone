@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use undertone::art::SubsonicImageSource;
+use undertone::config::Palette;
 use undertone::render::{
     ArtProtocol, ArtRenderer, ChafaRenderer, ImageCache, ImageSource, RenderRequest,
 };
@@ -92,7 +93,7 @@ fn main() {
     }
     let renderer = ChafaRenderer::with_default_binary(ArtProtocol::Sixel);
     let requests: Vec<RenderRequest> = (0..covers.len())
-        .map(|i| RenderRequest::new(images.path_for(&format!("k{i}")), 4, 2, 16))
+        .map(|i| RenderRequest::new(images.path_for(&format!("k{i}")), 4, 2, Palette::Partial))
         .collect();
 
     let start = Instant::now();
