@@ -1,4 +1,4 @@
-# Undertone — Implementation Plan
+# Undertone - Implementation Plan
 
 **Goal:** A Subsonic/Navidrome music client for very weak Linux hardware (Raspberry Pi 2 class, slow ARM laptops) that keeps Covertone's discovery-oriented feature set while staying in a flat, small memory footprint with minimal CPU.
 
@@ -18,7 +18,7 @@ Phases 0–5 complete and merged (flake, CI, Subsonic transport, typed endpoints
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | Audio = mpv subprocess over JSON IPC | All codecs, gapless, correct seek, crash isolation. **Budget cost 66 MB — see D1-open.** |
+| D1 | Audio = mpv subprocess over JSON IPC | All codecs, gapless, correct seek, crash isolation. **Budget cost 66 MB - see D1-open.** |
 | D1a | Playback is a playlist window of three, followed by `playlist-pos` | mpv gaplessly advances inside a window, which removes the inter-track gap that per-track `loadfile` cannot. The app maps mpv's playlist index back to a queue position, so `next`/`previous`/shuffle still belong to the app. Window growth is bounded (one URL string per entry) and topped up two entries ahead. |
 | D2 | Language = Rust | No GC, flat RSS, clean armv7/aarch64 cross-compile. |
 | D3 | No local metadata index | Server-side `search3` + paginated `albumList2` + TTL RAM cache cover it. Avoids schema/versioning/staleness bugs. |
@@ -30,14 +30,14 @@ Phases 0–5 complete and merged (flake, CI, Subsonic transport, typed endpoints
 | D9 | No TTY/framebuffer-console support | Terminal emulators only (foot, ghostty, kitty). Removes the CP437/16-colour/truecolor ladder. |
 | D10 | NixOS first class, like Covertone | Flake with devShell + package + overlay + NixOS module. |
 
-### D1-open — the audio backend memory fork
+### D1-open - the audio backend memory fork
 
 Measured, not estimated: **mpv floors at 66 MB** even with every legal flag (`--no-config --vo=null --ao=null --no-video --no-osc --no-osd-bar --no-input-default-bindings --no-terminal --cache=no --demuxer-max-bytes=2MiB`). My earlier 25–40 MB figure was wrong.
 
 | Option | Player RSS | Total app | Work | Risk |
 |---|---|---|---|---|
 | A. mpv subprocess | **66 MB (measured)** | ~85 MB | low | none, proven |
-| B. Native Rust (symphonia + cpal) | est. 10–20 MB (unmeasured) | ~30 MB | high — HTTP range streaming, seek, gapless, device handling | medium |
+| B. Native Rust (symphonia + cpal) | est. 10–20 MB (unmeasured) | ~30 MB | high - HTTP range streaming, seek, gapless, device handling | medium |
 | C. mpg123 + server MP3 transcode | est. 10–15 MB (unmeasured) | ~30 MB | medium | quality loss, transcode coupling |
 | D. Ship A behind a `Player` trait, swap later | as A | as A | low, opens B/C | none |
 
@@ -47,7 +47,7 @@ Measured, not estimated: **mpv floors at 66 MB** even with every legal flag (`--
 
 ## Measured data
 
-Hardware: 2 vCPU of an Intel N100, virtualised, NixOS 26.11, 3.9 GB RAM. Pi 2 projections assume **5–8× slower per core** (assumption — must be validated on device).
+Hardware: 2 vCPU of an Intel N100, virtualised, NixOS 26.11, 3.9 GB RAM. Pi 2 projections assume **5–8× slower per core** (assumption - must be validated on device).
 
 ### chafa encode cost and blob size (sixel, 500 px source)
 
@@ -58,11 +58,11 @@ Hardware: 2 vCPU of an Intel N100, virtualised, NixOS 26.11, 3.9 GB RAM. Pi 2 pr
 | 6x3 | 60x60 | 1.7 KB | 11.0 KB | 11.5 KB |
 | 8x6 | 80x80 | 2.8 KB | 16.2 KB | 16.8 KB |
 | 20x10 | 200x200 | 11.6 KB | 62.4 KB | 64.2 KB |
-| 32x16 | 320x320 | — | 138.9 KB | 142.6 KB |
+| 32x16 | 320x320 | - | 138.9 KB | 142.6 KB |
 
 Encode wall time: ~24 ms at thumbnail sizes, ~30 ms at 200 px, ~37 ms at 320 px. Dominated by process spawn (18.7 ms), not by encode.
 
-**The decisive number: 16 colours costs 8× less than 256.** A 12-thumbnail album screen is ~11.5 KB at 16 colours versus ~94 KB at 256. At 16 colours, per-row sixel art is cheap enough to repaint — which is what makes D8 viable on foot. It also happens to be the durdraw/ANSI-art look.
+**The decisive number: 16 colours costs 8× less than 256.** A 12-thumbnail album screen is ~11.5 KB at 16 colours versus ~94 KB at 256. At 16 colours, per-row sixel art is cheap enough to repaint - which is what makes D8 viable on foot. It also happens to be the durdraw/ANSI-art look.
 
 ### chafa process cost
 
@@ -73,7 +73,7 @@ Encode wall time: ~24 ms at thumbnail sizes, ~30 ms at 200 px, ~37 ms at 320 px.
 | batched 3 images, one spawn | 26.6 ms |
 | 3 separate spawns | 68.6 ms |
 
-Batching cuts per-image overhead ~2.5×. Twelve thumbnails ≈ one spawn + ~9 encodes ≈ 70 ms here, ~0.4–0.55 s on a Pi 2 — acceptable as a one-time background warm-up per screenful.
+Batching cuts per-image overhead ~2.5×. Twelve thumbnails ≈ one spawn + ~9 encodes ≈ 70 ms here, ~0.4–0.55 s on a Pi 2 - acceptable as a one-time background warm-up per screenful.
 
 ### chafa geometry (gotcha)
 
@@ -104,7 +104,7 @@ Batching cuts per-image overhead ~2.5×. Twelve thumbnails ≈ one spawn + ~9 en
 | warm | **4.2 ms** | all 12 from the blob cache |
 | idle painter plan | **1.4 µs** | emits 0 ops |
 
-Average blob: **955 bytes per thumbnail**, matching the 963 B measured for a single 4x3 render. A full 12-thumbnail screen is 11.5 KB — the number that makes per-row sixel art viable on foot.
+Average blob: **955 bytes per thumbnail**, matching the 963 B measured for a single 4x3 render. A full 12-thumbnail screen is 11.5 KB - the number that makes per-row sixel art viable on foot.
 
 ### chafa symbols (fallback)
 
@@ -126,10 +126,10 @@ Average blob: **955 bytes per thumbnail**, matching the 963 B measured for a sin
 | First frame | < 150 ms | 400 ms | harness |
 | Keypress → visible change | < 50 ms | 100 ms | harness |
 | Full-screen text redraw | < 3 ms | 8 ms | bench |
-| Cold art blob render | < 60 ms/image (N100) | — | measured |
+| Cold art blob render | < 60 ms/image (N100) | - | measured |
 | Cached art blob load | < 1 ms | 5 ms | harness |
 | Binary size (LTO, strip) | < 12 MB | 20 MB | `nix build` |
-| Art disk cache | 20 MB LRU | — | config |
+| Art disk cache | 20 MB LRU | - | config |
 
 **Memory must be flat**: it must not grow with library size, queue length, or how much you browse. That is the property defended in CI, more than any absolute number.
 
@@ -215,14 +215,14 @@ album id ──► coverArt?size=N ──► 20 MB disk image cache
 - Each frame the view layer yields `Vec<Placement { key, rect_cells, blob_key }>`.
 - The painter compares against `HashMap<PlacementKey, Rect>` of what is actually on screen.
 - Bytes emitted, in this order: **erase** for moved/gone → `terminal.draw()` (text diff) → **paint** for new/changed. The split order matters: an erase must not wipe text the diff just wrote.
-- Zero bytes when nothing changed — the default case while music plays.
+- Zero bytes when nothing changed - the default case while music plays.
 - On resize or alt-screen entry, drop all tracked placements and repaint.
 
-**Symbols mode bypasses the painter.** When the selected renderer is `symbols`, art is rasterised into cells and drawn through the ratatui buffer like ordinary text — no placements, no reconciliation. The painter only manages pixel blobs, so `symbols` mode and `off` mode have no painter cost at all.
+**Symbols mode bypasses the painter.** When the selected renderer is `symbols`, art is rasterised into cells and drawn through the ratatui buffer like ordinary text - no placements, no reconciliation. The painter only manages pixel blobs, so `symbols` mode and `off` mode have no painter cost at all.
 
-**Thumbnail strategy (D8):** rows of three text lines, covers at **16 colours**, sized in *real pixels*. chafa laid out its output in 10x20 "cells" but a terminal cell is whatever the font makes it — 16x41 on the Pocket Reform — and images are drawn at their own pixel size, so a `6x3` chafa box put a 60x60 cover inside a 96x123 slot. `App::wall` and `App::list_thumb` now divide the space by a target tile, then size the cover from the terminal's reported cell, so a cover fills its tile and each screen holds whole rows of them rather than a whole number and a blank band. Measured on the device: a 200 px 16-colour cover is **11.6 KB**, so a screenful of 21 is ~244 KB on the first paint of a screen (cached on disk; the steady state is zero bytes). That is the price of covers that fill their tiles; if it hurts on the Pi, shrink the wall with `[art] palette = "grayscale"` or fewer columns, not the cell sizing. Settle-paint (~80 ms debounce) during fast scrolling; immediate paint on selection change.
+**Thumbnail strategy (D8):** rows of three text lines, covers at **16 colours**, sized in *real pixels*. chafa laid out its output in 10x20 "cells" but a terminal cell is whatever the font makes it - 16x41 on the Pocket Reform - and images are drawn at their own pixel size, so a `6x3` chafa box put a 60x60 cover inside a 96x123 slot. `App::wall` and `App::list_thumb` now divide the space by a target tile, then size the cover from the terminal's reported cell, so a cover fills its tile and each screen holds whole rows of them rather than a whole number and a blank band. Measured on the device: a 200 px 16-colour cover is **11.6 KB**, so a screenful of 21 is ~244 KB on the first paint of a screen (cached on disk; the steady state is zero bytes). That is the price of covers that fill their tiles; if it hurts on the Pi, shrink the wall with `[art] palette = "grayscale"` or fewer columns, not the cell sizing. Settle-paint (~80 ms debounce) during fast scrolling; immediate paint on selection change.
 
-**Detail views** (now-playing, album page): single large cover — 320 px square on a 16x41 cell — at 240 colours (measured **139 KB**), one image on screen.
+**Detail views** (now-playing, album page): single large cover - 320 px square on a 16x41 cell - at 240 colours (measured **139 KB**), one image on screen.
 
 ### Player contract (mpv IPC)
 
@@ -264,9 +264,9 @@ mpv = "mpv"
 The full annotated example lives in the README, and a test parses it so the two
 cannot drift. Password precedence: `password_cmd` → `UNDERTONE_PASSWORD` →
 `password`; there is no password flag and no prompt, and nothing checks the
-file's mode — keep it out of `/etc` unless the whole machine may read it.
+file's mode - keep it out of `/etc` unless the whole machine may read it.
 
-### Feature map — Covertone → Undertone
+### Feature map - Covertone → Undertone
 
 | Covertone | Undertone | Change |
 |---|---|---|
@@ -278,12 +278,12 @@ file's mode — keep it out of `/etc` unless the whole machine may read it.
 | Auto DJ | same | `getSimilarSongs2` at queue end |
 | Listen Later | same | local JSON |
 | Random-first album sorting | same, default | server `type=random` |
-| Guess the Artist game | **cut** | — |
-| Tabbed browsing | **cut** | — |
+| Guess the Artist game | **cut** | - |
+| Tabbed browsing | **cut** | - |
 | Accent colour | **cut** | fixed palette, 16-colour floor |
-| Library scan | **cut** | — |
+| Library scan | **cut** | - |
 | Offline cache / downloads / sync | **cut** | art blob cache only, metadata only |
-| PWA / Docker / Capacitor / Android | **cut** | — |
+| PWA / Docker / Capacitor / Android | **cut** | - |
 | vim `h/j/k/l` grid navigation | list-based `j/k`, `h/l` for panes | terminal-native |
 
 New in Undertone:
@@ -309,140 +309,140 @@ g g top     G bottom   : command line (later, optional)
 
 Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic is tested against a pure state model, not a terminal.
 
-### Phase 0 — Scaffold and Nix (3 tasks)
+### Phase 0 - Scaffold and Nix (3 tasks)
 
-**Task 0.1 — Repository + flake**
+**Task 0.1 - Repository + flake**
 - Create `undertone` repo (public) via `gh repo create dbeley/undertone`.
 - Files: `flake.nix`, `flake.lock`, `.envrc`, `.gitignore`, `rust-toolchain.toml`, `Cargo.toml`, `src/main.rs` (prints version), `README.md`, `LICENSE` (GPL-3.0, matching Covertone).
 - `flake.nix` provides: `devShells.default` (rust 1.8x, cargo, clippy, rustfmt, chafa, mpv, just), `packages.default` (`rustPlatform.buildRustPackage`, `LTO=fat`, `strip`), `packages.undertone`, `overlays.default`, `nixosModules.default`.
 - NixOS module options: `services.undertone.enable`, `.settings` (attrset → generated TOML), `.package`, `.user`.
 - Verify: `nix develop -c cargo build`, `nix build .#`, `nix flake check`.
 
-**Task 0.2 — CI**
+**Task 0.2 - CI**
 - `.github/workflows/ci.yml`: `nix flake check`, `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, binary size gate (< 12 MB, fails the job).
 - Verify: push, workflow green.
 
-**Task 0.3 — Error type and logging**
+**Task 0.3 - Error type and logging**
 - `src/error.rs` (`thiserror`), `src/log.rs` (file logger at `$XDG_STATE_HOME/undertone/undertone.log`, off by default, `--debug` enables).
 - Tests: error display strings, log path resolution with `XDG_STATE_HOME` overridden.
 
-### Phase 1 — Subsonic client (4 tasks)
+### Phase 1 - Subsonic client (4 tasks)
 
-**Task 1.1 — Auth + request builder**
+**Task 1.1 - Auth + request builder**
 - `src/subsonic/client.rs`. Salt generation, `md5(password+salt)`, query assembly, `ureq` agent with `Connection: keep-alive`.
 - Tests: deterministic salt injection → exact expected query string; token matches a known md5 vector.
 
-**Task 1.2 — Response types**
+**Task 1.2 - Response types**
 - `src/subsonic/types.rs`. `serde` structs for the endpoint subset; `#[serde(rename = "subsonic-response")]` envelope; error envelope (`failed` + `error.code`/`message`).
 - Tests: fixture JSON for each endpoint → deserialises; error envelope maps to `SubsonicError::Server{code,message}`.
 
-**Task 1.3 — Endpoints**
+**Task 1.3 - Endpoints**
 - `src/subsonic/endpoints.rs`. One method per used endpoint, typed params, `size` on `getCoverArt`, optional `format`/`maxBitRate` on `stream`.
 - Tests: `ureq` test transport recording requests → assert exact path+params for each method.
 
-**Task 1.4 — TTL cache**
+**Task 1.4 - TTL cache**
 - `src/subsonic/cache.rs`. In-RAM LRU, 5 min TTL, bounded to ~500 entries.
 - Tests: hit/miss, expiry, eviction order, memory bound (entry count).
 
-### Phase 2 — Player (4 tasks)
+### Phase 2 - Player (4 tasks)
 
-**Task 2.1 — `Player` trait**
+**Task 2.1 - `Player` trait**
 - `src/player/mod.rs`: `trait Player { fn load(...); fn play(); fn pause(); fn seek(...); fn set_volume(...); fn state() -> PlaybackState; }` + `PlayerEvent`.
 - Tests: a `MockPlayer` exercises the contract; trait compiles for both impls.
 
-**Task 2.2 — mpv IPC**
+**Task 2.2 - mpv IPC**
 - `src/player/mpv.rs`: spawn with the measured flag set, unix socket, line-delimited JSON, id correlation, property observation, restart on EOF.
 - Tests: fake mpv script that echoes JSON on the socket → assert command encoding and event parsing; simulated crash → `Crashed` event + restart.
 
-**Task 2.3 — Queue model**
+**Task 2.3 - Queue model**
 - `src/queue.rs`: append/replace/remove/move, shuffle (stable order restore), repeat off/all/one, current index, autoDJ hook.
 - Tests: shuffle/repeat matrices, reorder invariants, autoDJ trigger at end.
 
-**Task 2.4 — Scrobbling**
+**Task 2.4 - Scrobbling**
 - `src/player/scrobble.rs`: `submission=false` at start, `submission=true` at 50 % or 240 s (whichever first), dedupe per track instance, disk-backed retry queue.
 - Tests: fake clock → assert exactly one now-playing and one submission per play; seek-past-50 %; skip-before-50 % scrobbles nothing; failed submission retried once and dropped after N.
 
-### Phase 3 — Render pipeline (5 tasks) ← highest risk, do early
+### Phase 3 - Render pipeline (5 tasks) ← highest risk, do early
 
-**Task 3.1 — Capability detection**
+**Task 3.1 - Capability detection**
 - `src/render/protocol.rs`: `$TMUX`/`$ZELLIJ` → symbols; `$KITTY_WINDOW_ID`/`TERM_PROGRAM` → kitty; DA1 probe with 100 ms timeout → sixel; else symbols. Cell pixel size via `TIOCGWINSZ` `ws_xpixel/ws_ypixel`, fallback `CSI 16 t`, fallback 8×17.
 - Tests: env matrices → protocol choice; zero cell pixels → fallback; probe timeout does not block.
 
-**Task 3.2 — chafa batching + splitting**
+**Task 3.2 - chafa batching + splitting**
 - `src/render/chafa.rs`: build one invocation for N images, split stdout on `ESC \`, parse `"1;1;W;H` header, reject malformed output.
 - Tests: recorded chafa output fixtures → correct split count, px parsing, blob attribution order.
 
-**Task 3.3 — Blob cache**
+**Task 3.3 - Blob cache**
 - `src/render/cache.rs`: path scheme `<id>/<px>-<colors>-<proto>.blob`, LRU eviction to configured MB, atomic writes.
 - Tests: round-trip, eviction under a forced small cap, concurrent-safe write (temp+rename).
 
-**Task 3.4 — Render worker**
+**Task 3.4 - Render worker**
 - `src/render/worker.rs`: single thread, bounded channel (64), viewport priority, batch collection (up to 8), cancellation of requests no longer visible.
 - Tests: priority ordering, cancellation, no unbounded queue growth when the user scrolls fast (assert queue length stays ≤ cap).
 
-**Task 3.5 — Painter (reconciler)**
+**Task 3.5 - Painter (reconciler)**
 - `src/render/painter.rs`: desired vs painted diff, emit order erase→draw→paint, zero bytes when unchanged, full invalidation on resize.
-- Tests: byte-count assertions — unchanged frame emits 0; one scrolled row emits exactly one erase + one paint; resize emits full repaint; erase never precedes draw for the same cell.
+- Tests: byte-count assertions - unchanged frame emits 0; one scrolled row emits exactly one erase + one paint; resize emits full repaint; erase never precedes draw for the same cell.
 
-### Phase 4 — UI shell (5 tasks)
+### Phase 4 - UI shell (5 tasks)
 
-**Task 4.1 — Theme + 16-colour floor**
+**Task 4.1 - Theme + 16-colour floor**
 - `src/ui/theme.rs`: palette that degrades to 16 colours; `COLORTERM` detection for truecolor accents; no user theming.
 - Tests: every semantic token resolves in 16-colour mode.
 
-**Task 4.2 — App shell + navigation**
+**Task 4.2 - App shell + navigation**
 - `src/app.rs`, `src/ui/app_view.rs`: view enum, `1`–`6`, back stack, dirty tracking, status line.
 - Tests: navigation state machine, back stack, unknown key is a no-op.
 
-**Task 4.3 — Album list with thumbnails**
+**Task 4.3 - Album list with thumbnails**
 - `src/ui/album_list.rs`: 2-line rows, thumb block, pagination via `albumList2` offset, random default, sort cycling.
 - Tests: row rendering from a state fixture (into a `TestBackend`), pagination fetch trigger at 80 % scroll, thumb placement rects.
 
-**Task 4.4 — Detail views**
+**Task 4.4 - Detail views**
 - `album_page.rs`, `artist_page.rs`, `playlist_page.rs`, `now_playing.rs`: track lists, big cover, play-from-track, star toggle.
 - Tests: track list selection, play action produces the right queue, star toggles optimistic + revert on error.
 
-**Task 4.5 — Search, queue view, help**
+**Task 4.5 - Search, queue view, help**
 - `search.rs` (debounced `search3`), `queue_view.rs`, `shortcuts.rs`.
 - Tests: debounce coalesces keystrokes (< 150 ms → one request), queue reorder via keys, help overlay content.
 
-### Phase 5 — Discovery and persistence (4 tasks)
+### Phase 5 - Discovery and persistence (4 tasks)
 
-**Task 5.1 — Discovery pane**
+**Task 5.1 - Discovery pane**
 - `src/discovery.rs` + `ui/discovery_pane.rs`: similar artists, same-genre albums, artist bio text. Lazy, TTL-cached, one request at a time, cancellable, never on the startup path.
 - Tests: toggle does not fetch at startup; fetch cancellation on track change; cache prevents a second fetch inside TTL.
 
-**Task 5.2 — Auto DJ**
+**Task 5.2 - Auto DJ**
 - Extend `queue.rs`: on `end-file` with playlist end, fetch `getSimilarSongs2` for the last track, append, cap the lookahead.
 - Tests: triggers once, does not trigger when repeat=all, respects a max fetch chain.
 
-**Task 5.3 — Listen Later**
+**Task 5.3 - Listen Later**
 - `src/listen_later.rs`: local JSON at `$XDG_DATA_HOME/undertone/listen-later.json`, atomic write, dedupe by album id.
 - Tests: add/remove/dedupe, corrupt file → empty list + warning, atomic write survives a simulated partial write.
 
-**Task 5.5 — Gapless playback**
+**Task 5.5 - Gapless playback**
 - Hand the player a window of tracks and follow its playlist position; top the window up before it runs out. `Ended` becomes informational (mpv reports the end of every entry), and `Idle` means the window ran out.
 
-**Task 5.4 — Session restore + config**
+**Task 5.4 - Session restore + config**
 - `src/config.rs` completion + session state file (queue, index, position, view).
 - Tests: round-trip; missing/corrupt session → clean start; config precedence (CLI > cmd > file); 0600 permission warning.
 
-### Phase 6 — Hardening (4 tasks)
+### Phase 6 - Hardening (4 tasks)
 
-**Task 6.1 — Resource harness**
+**Task 6.1 - Resource harness**
 - `tests/perf.rs` + `scripts/measure.sh`: startup to first frame, idle RSS (read `/proc/self/status` VmHWM), full redraw timing, cache-hit latency. Thresholds from the budget table, generous enough for CI noise.
 - Verify: `cargo test --release --test perf` passes on CI.
 
-**Task 6.2 — Degradation matrix** — done
+**Task 6.2 - Degradation matrix** - done
 - `scripts/degradation.py` drives the real binary through a pty and asserts on the rendered screen: `sixel`, `kitty`, `symbols`, 60×24, 18×4, dead server, missing player. Each row presents as its terminal through `TERM_PROGRAM`, so detection itself is what is exercised.
 - It serves its own library (`scripts/fixture_server.py`), so it needs no network, and runs in CI.
 - Results and the cases it cannot cover are in `docs/COMPATIBILITY.md`. The matrix is what found symbol art being dead in three places at once.
 
-**Task 6.3 — Error paths**
+**Task 6.3 - Error paths**
 - Server down at startup, auth failure, mid-playback network loss, mpv missing from PATH, mpv crash, malformed JSON, unreadable cache dir.
 - Verify: each surfaces as a non-fatal status-line message; the app never exits from a recoverable error.
 
-**Task 6.4 — Docs** — mostly done
+**Task 6.4 - Docs** - mostly done
 - `docs/DESIGN.md` (this file), `docs/PERFORMANCE.md` (how to reproduce the measurements), `docs/COMPATIBILITY.md` (what each terminal and each failure does), `docs/SCREENS.md` (frames rendered by `scripts/screens.py` from the real binary, so they cannot drift).
 - `README.md` is the entry point, kept short on purpose.
 - Not done: `vhs` recordings. The frames in `docs/SCREENS.md` are text because a terminal screenshot is text; an animated recording would show the art protocols and the gapless transitions, which text cannot.
@@ -453,8 +453,8 @@ Each task ends with tests passing and a commit. Tests are `cargo test`; UI logic
 
 Four rules keep the screens coherent as the app grew:
 
-- **An artist is a place, not a list.** Its page has three panes — albums,
-  similar artists, biography — and `Tab` moves between them; the cursor follows
+- **An artist is a place, not a list.** Its page has three panes - albums,
+  similar artists, biography - and `Tab` moves between them; the cursor follows
   the focused pane, and `Enter` acts on what that pane holds. The left pane has
   two tabs, albums and the artist's most played tracks, switched with `t`:
   albums and top songs answer the same question and both open something, so
@@ -479,7 +479,7 @@ Four rules keep the screens coherent as the app grew:
   accent colour mean "this is making sound", `›` and the cursor mean "Enter
   goes here". Moving in the queue only moves the cursor: what plays, and what
   plays next, are read from the queue's own position, so browsing a queue
-  cannot skip a track. Enter is the point where the two meet — it starts the
+  cannot skip a track. Enter is the point where the two meet - it starts the
   row under the cursor and the cursor then follows playback, as it does after
   `>` or an automatic transition.
 

@@ -1,6 +1,6 @@
 //! Error paths, without a real server or a real mpv.
 //!
-//! Every failure here is one a user can actually hit — a wrong password, a
+//! Every failure here is one a user can actually hit - a wrong password, a
 //! proxy returning an HTML error page, a server that is down, a missing player,
 //! a cache directory that cannot be written. The rule the design sets is that
 //! none of them may be fatal: they surface in the status line and the app keeps

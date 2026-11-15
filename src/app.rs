@@ -40,7 +40,7 @@ const TILE_LABEL: u16 = 1;
 /// One thumbnail on screen: the cells it occupies, and the box to render into.
 ///
 /// The two are not the same size. chafa measures its output in cells of 10x20
-/// pixels, but a terminal cell is whatever the font makes it — 16x41 on the
+/// pixels, but a terminal cell is whatever the font makes it - 16x41 on the
 /// Pocket Reform. Images are drawn at their own pixel size, so asking for a
 /// `6x3` chafa box put a 60x60 image inside a 96x123 slot: a cover using half
 /// of the space reserved for it. Sizing the chafa box in real pixels is what
@@ -186,7 +186,7 @@ impl ArtistPane {
 /// What the artist page's left pane is showing.
 ///
 /// The page keeps three panes; this is a tab inside the first one, because
-/// albums and top songs are the same question — what does this artist have —
+/// albums and top songs are the same question - what does this artist have -
 /// and both are lists you open something from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArtistLeft {
@@ -214,7 +214,7 @@ impl ArtistLeft {
 /// One row of a search: albums open, songs play.
 ///
 /// A result list is capped at seventy rows, so the width of the largest
-/// variant costs tens of kilobytes at worst — not worth a `Box` at every use.
+/// variant costs tens of kilobytes at worst - not worth a `Box` at every use.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum SearchHit {
@@ -835,7 +835,7 @@ impl App {
         self.refresh_listen_albums();
         self.jump_to_view(View::ListenLater);
         if self.listen_albums.is_empty() {
-            self.status("listen later is empty — press z on an album to add it");
+            self.status("listen later is empty - press z on an album to add it");
         }
     }
 
@@ -852,7 +852,7 @@ impl App {
     ///
     /// `after` tucks it in behind the playing track; otherwise it goes to the
     /// end. An album comes with all its tracks, which costs a request because
-    /// the lists only carry counts — an explicit keypress is the right time to
+    /// the lists only carry counts - an explicit keypress is the right time to
     /// spend it.
     pub fn queue_selected(&mut self, at_end: bool) {
         if let Some(items) = self.song_items_under_cursor() {
@@ -1263,7 +1263,7 @@ impl App {
                     .min(self.favorites.len().saturating_sub(1));
                 self.jump_to_view(View::Favorites);
                 if self.favorites.is_empty() {
-                    self.status("nothing starred yet — press * on an album");
+                    self.status("nothing starred yet - press * on an album");
                 }
             }
             Err(err) => self.error(format!("could not load favourites: {err}")),
@@ -1434,7 +1434,7 @@ impl App {
 
     /// Rebuild the player's lookahead window around the track that is playing.
     ///
-    /// Used when the queue changes under the player — inserting a track "next"
+    /// Used when the queue changes under the player - inserting a track "next"
     /// is the case that matters. The window is replaced, so the stream restarts
     /// and is seeked back to where it was; state that belongs to the play
     /// (scrobble progress, listened time) is left alone.
@@ -1584,7 +1584,7 @@ impl App {
     /// Extend the queue with similar tracks when it is running out.
     ///
     /// Blocking, and deliberately so: it runs once per track transition, and
-    /// the alternative — a background fetch — would have to splice songs into a
+    /// the alternative - a background fetch - would have to splice songs into a
     /// queue the cursor indexes while the user is moving through it.
     pub fn auto_dj_top_up(&mut self) {
         if !self.settings.auto_dj {
@@ -1690,7 +1690,7 @@ impl App {
         } else if !self.queue.is_empty() {
             self.play_current();
         } else {
-            self.status("nothing to play — Enter on an album first");
+            self.status("nothing to play - Enter on an album first");
         }
     }
 
@@ -1813,7 +1813,7 @@ impl App {
                 // `Stop` is what the player reports when we replace its
                 // playlist, so only a real failure is worth a message.
                 if matches!(reason, EndReason::Error | EndReason::Redirect) {
-                    self.error("track failed to play — skipping to the next");
+                    self.error("track failed to play - skipping to the next");
                 }
             }
             PlayerEvent::Idle if !self.now.loaded => {
@@ -1955,8 +1955,8 @@ impl App {
     /// `h` / Esc: return to wherever this view was opened from.
     ///
     /// Always clears: coming back re-renders a different list at different
-    /// offsets, and a plain diff leaves fragments of the previous screen —
-    /// long titles in particular — behind.
+    /// offsets, and a plain diff leaves fragments of the previous screen -
+    /// long titles in particular - behind.
     pub fn go_back(&mut self) {
         // No history (a restored session, say) falls back to the library: a key
         // that does nothing reads as broken.
@@ -2598,7 +2598,7 @@ impl App {
                     self.pending_seek = Some(session.seconds);
                 }
             }
-            self.status("restored last session — p to play");
+            self.status("restored last session - p to play");
         }
 
         // Sort and layout come back, because they are how you left the place
@@ -2730,7 +2730,7 @@ impl App {
             cols = cols_for(rows, cell_w, cell_h);
         }
         // chafa's box is counted in whole 20-pixel steps, and a square box is
-        // what a square cover fills exactly — no letterbox, no dead band.
+        // what a square cover fills exactly - no letterbox, no dead band.
         let px = (u32::from(cols) * cell_w)
             .min(u32::from(rows) * cell_h)
             .max(20)

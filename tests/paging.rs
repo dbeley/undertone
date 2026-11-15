@@ -1,6 +1,6 @@
 //! Album paging against a local server, so it runs offline and repeatably.
 //!
-//! The demo Navidrome only holds fifty albums, which is fewer than one page —
+//! The demo Navidrome only holds fifty albums, which is fewer than one page -
 //! a short page is exactly the case that *stops* paging, so the interesting
 //! path (append, then stop at the end) cannot be exercised there.
 

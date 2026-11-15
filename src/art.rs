@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(key, again);
 
         // `pending()` is a queue length, and the worker takes the job off the
-        // queue the instant it can — asserting on it races the thread. The
+        // queue the instant it can - asserting on it races the thread. The
         // property that matters is that the key is encoded exactly once.
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline && !service.is_ready(&key) {

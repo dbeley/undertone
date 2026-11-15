@@ -82,7 +82,7 @@ fn album_detail_contains_songs() {
     let song = &album.song[0];
     assert!(!song.title.is_empty());
     println!(
-        "{} — {} songs, first track: {}",
+        "{} - {} songs, first track: {}",
         album.name,
         album.song.len(),
         song.title
@@ -165,7 +165,7 @@ fn playlists_and_scrobble_round_trip() {
     api.scrobble(&detail.entry[0].id, false, None)
         .expect("now-playing should be accepted");
     println!(
-        "playlist {} — {} entries; now-playing accepted",
+        "playlist {} - {} entries; now-playing accepted",
         detail.name,
         detail.entry.len()
     );

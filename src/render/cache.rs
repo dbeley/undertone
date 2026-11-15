@@ -1,6 +1,6 @@
 //! On-disk cache of encoded escape blobs.
 //!
-//! A cache hit must be a file read plus an escape write — never a re-encode.
+//! A cache hit must be a file read plus an escape write - never a re-encode.
 //! Blobs are keyed by `(cover id, pixel size, colours, protocol)`, written
 //! atomically, and evicted least-recently-modified first.
 
@@ -100,7 +100,7 @@ impl BlobCache {
             let mut file = fs::File::create(&temp_path)?;
             file.write_all(blob)?;
             // Deliberately no `sync_all`: this is a cache, and a durable write
-            // per cover costs about 7 ms on this machine — far more on an SD
+            // per cover costs about 7 ms on this machine - far more on an SD
             // card, which is exactly the hardware this targets. The rename is
             // still atomic, and `get` rejects a truncated blob, so the worst
             // case after a power cut is re-rendering one image.

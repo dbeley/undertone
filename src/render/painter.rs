@@ -122,7 +122,7 @@ impl Painter {
 
     /// Diff the desired placements against what is on screen.
     ///
-    /// The common case — music playing, nothing moving — returns an empty plan.
+    /// The common case - music playing, nothing moving - returns an empty plan.
     pub fn plan(&mut self, desired: &[Placement]) -> FramePlan {
         // Only pixel protocols place images; symbols are drawn as cells by
         // ratatui.

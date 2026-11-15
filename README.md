@@ -35,7 +35,7 @@ Read from `$XDG_CONFIG_HOME/undertone/config.toml` (usually
 file somewhere else. Unknown keys are a startup error, so a typo tells you
 instead of being silently ignored.
 
-Every key, with its default — a real file can be shorter, but nothing is
+Every key, with its default - a real file can be shorter, but nothing is
 missing here:
 
 ```toml
@@ -66,10 +66,10 @@ mpv = "mpv"            # binary name or absolute path
 
 | key | default | what it does |
 | --- | ------- | ------------ |
-| `server` | — (required) | Subsonic/Navidrome base URL |
-| `username` | — (required) | account name |
-| `password_cmd` | — | argv whose stdout is the password; wins over `password` |
-| `password` | — | the password itself; bypassed by `UNDERTONE_PASSWORD` |
+| `server` | - (required) | Subsonic/Navidrome base URL |
+| `username` | - (required) | account name |
+| `password_cmd` | - | argv whose stdout is the password; wins over `password` |
+| `password` | - | the password itself; bypassed by `UNDERTONE_PASSWORD` |
 | `scrobble` | `true` | report plays, and "now playing", to the server |
 | `auto_dj` | `true` | append similar tracks when the queue is nearly out (needs the server's similar-songs endpoint) |
 | `art.palette` | `partial` | colours for every cover on every screen: `grayscale` (2), `partial` (16) or `full` (24-bit) |
@@ -90,8 +90,8 @@ built-in defaults. The environment variables are `UNDERTONE_SERVER`,
 override settings are `--server`, `--username`, `--player=mpv|null`,
 `-c/--config`, `--debug` and `--clear-cache`.
 
-Other paths: the art cache lives in `$XDG_CACHE_HOME/undertone` — `--clear-cache`
-wipes it and exits — and the queue, sort order and list layouts are restored from
+Other paths: the art cache lives in `$XDG_CACHE_HOME/undertone` - `--clear-cache`
+wipes it and exits - and the queue, sort order and list layouts are restored from
 `$XDG_STATE_HOME/undertone/session.json`. `--debug` writes a key log there for
 tracking down a phantom keypress.
 
@@ -121,7 +121,7 @@ navigation vocabulary. `/` opens search, and the rail carries a `Search` row
 purely as a reminder.
 
 `/` opens a search box in the header: type, Enter runs the query, Esc closes
-it. Results are one list — albums first, then songs — with each row saying which
+it. Results are one list - albums first, then songs - with each row saying which
 it is; Enter opens an album or plays the song. The query runs on Enter rather
 than on every keystroke, because the client is synchronous and a request per
 letter would freeze the interface mid-word.

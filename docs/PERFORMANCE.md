@@ -5,7 +5,7 @@ Two halves, deliberately separate:
 - **`tests/perf.rs`** guards the algorithms in CI: an idle frame must plan to
   zero operations, planning must stay in the microsecond range, the cache must
   not do anything silly, and building the app must touch no network. Thresholds
-  there are loose on purpose — they are a regression alarm, not a benchmark.
+  there are loose on purpose - they are a regression alarm, not a benchmark.
 - **`scripts/measure.sh`** measures the process on real hardware: time to first
   frame, idle RSS, and whether an idle app writes anything at all.
 
@@ -48,7 +48,7 @@ the public internet (a LAN server will be much faster). Release build.
 Art pipeline, measured earlier with `examples/art_bench.rs` and `chafa` 1.18. The
 last two rows are the cost of covers that fill their tiles: sizing art in real
 pixels took a wall with 12 small covers to 21 at 200 px on the same screen, and
-its first paint from 11.5 KB to 244 KB — once, then cached.
+its first paint from 11.5 KB to 244 KB - once, then cached.
 
 | Metric | Value |
 |---|---|
@@ -81,11 +81,11 @@ should stay well under a millisecond on an ARMv7 core at 900 MHz.
 
 What will be slower on a Pi 2:
 
-- **chafa** — roughly 5–8× slower per image, so a cold screenful is on the
+- **chafa** - roughly 5–8× slower per image, so a cold screenful is on the
   order of one second rather than 149 ms.
-- **TLS handshakes** — the Cortex-A7 has no AES extensions; expect cover
+- **TLS handshakes** - the Cortex-A7 has no AES extensions; expect cover
   fetches to dominate first-load time.
-- **SD card writes** — the reason blob writes are no longer fsynced. A durable
+- **SD card writes** - the reason blob writes are no longer fsynced. A durable
   write per cover cost 7.2 ms here and would cost far more there.
 
 Run `scripts/measure.sh` on the device and put the numbers in this file; until

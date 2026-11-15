@@ -312,7 +312,7 @@ What plays next; Enter starts from the cursor.
 
 ```
   Albums   1│ Queue                                                                                    0
-  Artists  2│ ┌ Queue — 0 tracks · shuffle off · repeat off ───────────────────────────────────────────┐
+  Artists  2│ ┌ Queue - 0 tracks · shuffle off · repeat off ───────────────────────────────────────────┐
   Starred  3│ │                                                                                        │
   Later    4│ │                                                                                        │
   Lists    5│ │                                                                                        │

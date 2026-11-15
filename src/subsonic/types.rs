@@ -3,7 +3,7 @@
 //! Shapes were captured from a real Navidrome 0.64.2 (OpenSubsonic) instance.
 //! Two rules learned from that server:
 //!
-//! 1. Every collection is `#[serde(default)]` — Navidrome omits empty arrays
+//! 1. Every collection is `#[serde(default)]` - Navidrome omits empty arrays
 //!    entirely, e.g. `"searchResult3": {}` for a query with no hits.
 //! 2. Every scalar that the spec marks optional is `Option`, because
 //!    OpenSubsonic servers vary in what they include.

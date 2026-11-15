@@ -5,11 +5,11 @@ use std::process::Command;
 
 /// Detach a child from the controlling terminal.
 ///
-/// A child that still owns `/dev/tty` can probe it — chafa asks for the
-/// terminal's foreground/background colours and its cell size — and the
+/// A child that still owns `/dev/tty` can probe it - chafa asks for the
+/// terminal's foreground/background colours and its cell size - and the
 /// terminal's replies are delivered to *our* stdin, where they are decoded as
 /// keystrokes. An `OSC 10 ; rgb:…` report becomes `Alt+]`, then `1`, `0`, `;`,
-/// `r`, `g`, `b`, … — and the `r` cycles repeat.
+/// `r`, `g`, `b`, … - and the `r` cycles repeat.
 ///
 /// With no controlling terminal there is nothing to probe, so the replies
 /// never exist. Failure is ignored: a detached-but-working child is better

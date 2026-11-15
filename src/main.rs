@@ -1,4 +1,4 @@
-//! Undertone — a Subsonic/Navidrome client for very weak Linux hardware.
+//! Undertone - a Subsonic/Navidrome client for very weak Linux hardware.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -86,7 +86,7 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.clear_cache {
         let dir = undertone::config::cache_dir(&env).join("blobs");
         let freed = clear_directory(&dir)?;
-        println!("cleared {} — {} freed", dir.display(), human_bytes(freed));
+        println!("cleared {} - {} freed", dir.display(), human_bytes(freed));
         return Ok(());
     }
 
@@ -115,7 +115,7 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
             //
             // The message is short on purpose: the error chain is long enough
             // to push every other warning off the status line.
-            startup_warnings.push(format!("cannot reach {} — R to retry", settings.server));
+            startup_warnings.push(format!("cannot reach {} - R to retry", settings.server));
             None
         }
     };
@@ -141,7 +141,7 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
         // An unusable cache directory is a reason to lose the cached blobs,
         // not to lose art or the player: retry somewhere writable.
         startup_warnings.push(format!(
-            "art cache unusable ({}) — using {}",
+            "art cache unusable ({}) - using {}",
             settings.cache_dir.display(),
             std::env::temp_dir().join("undertone-art").display()
         ));
@@ -166,7 +166,7 @@ fn run(args: cli::Args) -> Result<(), Box<dyn std::error::Error>> {
             Err(_err) => {
                 // mpv missing or refusing to start: browsing still works, and
                 // saying so beats exiting with a stack of context.
-                startup_warnings.push("mpv unavailable — playback disabled".to_string());
+                startup_warnings.push("mpv unavailable - playback disabled".to_string());
                 Box::new(NullPlayer::new())
             }
         }

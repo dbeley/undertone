@@ -1,5 +1,5 @@
 {
-  description = "Undertone — Subsonic/Navidrome client for very weak Linux hardware";
+  description = "Undertone - Subsonic/Navidrome client for very weak Linux hardware";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

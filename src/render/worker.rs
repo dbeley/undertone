@@ -2,7 +2,7 @@
 //!
 //! One thread does everything expensive: fetching cover bytes, writing them to
 //! the image cache, encoding with chafa, and storing the escape blob. Nothing
-//! on the input path ever touches the network or spawns a process — that is
+//! on the input path ever touches the network or spawns a process - that is
 //! what keeps a TUI responsive on weak hardware.
 //!
 //! Jobs carry a priority so what is visible now beats what is being prefetched
@@ -32,7 +32,7 @@ pub const MAX_BATCH: usize = 4;
 /// Pixels fetched from the server, once per cover.
 ///
 /// One size for every view: an album page's cover is 20 cells wide by nine
-/// tall, which on a 16x41 cell (the Pocket Reform) is a 320x320 square — the
+/// tall, which on a 16x41 cell (the Pocket Reform) is a 320x320 square - the
 /// largest thing we draw. Fetching per-view sizes meant switching layouts
 /// refetched every cover; one size keeps a single image per album and lets
 /// chafa downscale for the smaller renders.
@@ -58,7 +58,7 @@ pub trait ImageSource: Send + Sync {
 pub struct Job {
     /// Cache key, built by the caller.
     pub key: String,
-    /// Subsonic `coverArt` token — not the album id.
+    /// Subsonic `coverArt` token - not the album id.
     pub cover_id: String,
     pub cols: u32,
     pub rows: u32,
@@ -250,7 +250,7 @@ fn worker_loop(
         for job in batch {
             if let Some(blob) = blobs.get(&job.key) {
                 // kitty images are deleted by id, and a blob cached before ids
-                // were injected has none — so it could be painted and never
+                // were injected has none - so it could be painted and never
                 // removed. Re-tag on the way out (the tag is idempotent) and
                 // rewrite the entry so old caches heal themselves.
                 let blob = match renderer.protocol() {
@@ -380,7 +380,7 @@ fn worker_loop(
             Err(_err) => {
                 // A failed render is not fatal: the UI shows no art for that
                 // album and everything else keeps working. Never log to stderr
-                // here — the alternate screen owns the terminal.
+                // here - the alternate screen owns the terminal.
             }
         }
     }

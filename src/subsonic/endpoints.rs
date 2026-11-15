@@ -55,7 +55,7 @@ impl AlbumListType {
     ///
     /// Exactly what the list is likely to be wanted for: discovery, what is
     /// new, what gets played, and finding a name. Starred and by-year remain
-    /// available in the endpoint but are no longer in the cycle — favourites
+    /// available in the endpoint but are no longer in the cycle - favourites
     /// have their own screen, and by-year is a filter more than a sort.
     pub const ALL_IN_UI: [Self; 4] = [
         Self::Random,

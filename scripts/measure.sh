@@ -3,7 +3,7 @@
 #
 # The CI tests in tests/perf.rs guard the algorithms; this measures the
 # process, which needs a terminal and a release build. Run it on the machine
-# you care about — a Pi 2 will give very different numbers from a laptop, and
+# you care about - a Pi 2 will give very different numbers from a laptop, and
 # that difference is the whole point.
 #
 #   ./scripts/measure.sh                       # against the demo server
@@ -17,7 +17,7 @@ USER_=${USER_:-demo}
 PASSWORD=${UNDERTONE_PASSWORD:-demo}
 
 if [ ! -x "$BIN" ]; then
-    echo "no binary at $BIN — run: nix develop -c cargo build --release" >&2
+    echo "no binary at $BIN - run: nix develop -c cargo build --release" >&2
     exit 1
 fi
 
@@ -69,7 +69,7 @@ while True:
             idle_bytes += len(data)
     now = time.time() - start
     # Settle for two seconds after the first frame, then watch for one second
-    # of silence — that is what "idle" means here.
+    # of silence - that is what "idle" means here.
     if first_frame is not None and idle_start is None and now > first_frame + 3:
         idle_start = now
     if idle_start is not None and now > idle_start + 5:

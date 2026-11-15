@@ -91,7 +91,7 @@ fn opening_an_album_and_playing_it_from_the_ui_path() {
             detail.song[0].title.clone(),
         )
     };
-    println!("opened {name} — {song_count} tracks");
+    println!("opened {name} - {song_count} tracks");
 
     app.play_album();
     assert_eq!(app.queue.len(), song_count);

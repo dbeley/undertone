@@ -1,6 +1,6 @@
 //! chafa subprocess encoding.
 //!
-//! One process can render several images, which amortises process startup —
+//! One process can render several images, which amortises process startup -
 //! measured at ~19 ms on an N100 and roughly 5-8x that on a Pi 2 class board.
 //! Batched output is split back into per-image blobs on the protocol
 //! terminator.
@@ -14,7 +14,7 @@ use crate::process::detach_from_terminal;
 
 /// Keep chafa away from the controlling terminal.
 ///
-/// By default chafa probes the terminal — `OSC 10;?` / `OSC 11;?` for the
+/// By default chafa probes the terminal - `OSC 10;?` / `OSC 11;?` for the
 /// foreground and background colours, `CSI 14t`/`16t`/`18t` for cell metrics.
 /// The terminal's replies go to the process that owns stdin, which is us, and
 /// crossterm decodes them as keystrokes: an `OSC 10 ; rgb:d6d6/e3e3/f4f4`
@@ -123,7 +123,7 @@ impl ArtRenderer for ChafaRenderer {
         }
 
         // Only sixel is batched. chafa splits a kitty image across APC frames
-        // with `m=1` continuations — twelve frames for a 2x2 render — so
+        // with `m=1` continuations - twelve frames for a 2x2 render - so
         // splitting on the terminator would fragment one image into many.
         // kitty terminals are fast machines where one process per image is
         // free, so we do not batch them at all.
@@ -213,7 +213,7 @@ pub fn split_sequences(output: &[u8], protocol: ArtProtocol) -> Vec<Vec<u8>> {
 
 /// Pixel dimensions from a sixel header: `ESC P … q " Pan ; Pad ; W ; H`.
 ///
-/// The header is not quoted at the end — chafa emits `"1;1;30;40#0;…`, so the
+/// The header is not quoted at the end - chafa emits `"1;1;30;40#0;…`, so the
 /// height field runs into the first colour introducer and must be read as
 /// leading digits only.
 pub fn sixel_dimensions(blob: &[u8]) -> Option<(u32, u32)> {

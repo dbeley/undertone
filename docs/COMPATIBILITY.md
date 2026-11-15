@@ -2,7 +2,7 @@
 
 What the interface does with the terminals, sizes and failures it will meet.
 Every row below is checked by `scripts/degradation.py`, which starts the real
-binary in a pty, waits for the first frame, and asserts on the rendered screen —
+binary in a pty, waits for the first frame, and asserts on the rendered screen -
 not on a claim in a document.
 
 ```
@@ -36,7 +36,7 @@ binary, so the detection itself is what is under test.
 
 Symbol art is the fallback that matters most: a framebuffer console and any
 terminal without graphics support both land there. It is drawn through ratatui
-rather than the painter, so it takes part in normal cell diffing — and it had
+rather than the painter, so it takes part in normal cell diffing - and it had
 been silently broken, because three separate gates all assumed "not pixel means
 no art": the art service refused to encode it, the placement collector skipped
 it, and no source was handed to the service. One chafa call per cover fixes the
@@ -62,7 +62,7 @@ queue list stay.
 | server returns HTML or garbage | decode error naming the endpoint | `tests/errors.rs` |
 | art cache unwritable | a warning, the cache moves to `$TMPDIR`, everything else works | `tests/errors.rs` |
 | `mpv` missing | silent player, warning, browsing still works | `missing player` row, `tests/errors.rs` |
-| `chafa` missing | covers keep their placeholder; browsing and playback are unaffected | — |
+| `chafa` missing | covers keep their placeholder; browsing and playback are unaffected | - |
 | a track fails mid-playlist | message, playback moves on | `tests/errors.rs`, `src/app.rs` |
 
 What the interface looks like is in `docs/SCREENS.md`, rendered from the real
@@ -73,7 +73,7 @@ art itself is what the table above asserts.
 ## Build targets
 
 CI builds the binary for aarch64 as well as x86_64
-(`packages.x86_64-linux.cross-aarch64`, cross-compiled — build scripts run
+(`packages.x86_64-linux.cross-aarch64`, cross-compiled - build scripts run
 natively, so no emulation), and asserts the result really is an ARM ELF. That
 proves it compiles for the target; it proves nothing about how it behaves there,
 which is what the manual rows below are for.

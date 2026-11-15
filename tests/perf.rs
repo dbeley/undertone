@@ -6,7 +6,7 @@
 //! must cost nothing, planning must stay in the microsecond range, and building
 //! the app must not wander off into I/O.
 //!
-//! Process-level numbers — RSS and time-to-first-frame — are measured by
+//! Process-level numbers - RSS and time-to-first-frame - are measured by
 //! `scripts/measure.sh`, because they need a real terminal and a real binary,
 //! and a threshold on RSS in CI measures the CI runner, not the app.
 //!

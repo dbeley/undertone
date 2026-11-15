@@ -49,7 +49,7 @@ pub struct Config {
 /// How many colours a cover may use, as a chafa preset.
 ///
 /// Presets rather than free colour counts: chafa rejects anything outside its
-/// fixed list, and the byte cost between them is an order of magnitude — a
+/// fixed list, and the byte cost between them is an order of magnitude - a
 /// `full` cover is 7-10x the size of a `partial` one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
