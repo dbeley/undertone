@@ -51,6 +51,8 @@ pub struct Session {
     #[serde(default)]
     pub starred_layout: Option<String>,
     #[serde(default)]
+    pub starred_artists_layout: Option<String>,
+    #[serde(default)]
     pub later_layout: Option<String>,
     /// Which list was open, as a stable key. Detail views are not stored: an
     /// album detail needs the album, and reloading it on start would mean a

@@ -17,11 +17,12 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use crate::app::{AlbumLayout, App, ArtistLeft, ArtistPane, View, ROW_HEIGHT};
+use crate::app::{AlbumLayout, App, ArtistLeft, ArtistPane, FavoritePane, View, ROW_HEIGHT};
 use crate::art::ArtService;
 use crate::render::{
     blank_sixel, kitty_delete, kitty_id, ArtProtocol, CellSize, FramePlan, PaintOp, Placement,
 };
+use crate::subsonic::Artist;
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -403,30 +404,56 @@ pub fn collect_placements(app: &mut App, area: Rect) {
                 .saturating_sub(app.artist_bio_page.max(1));
             app.artist_bio_scroll = app.artist_bio_scroll.min(max);
         }
-        View::Favorites => {
-            app.ensure_favorite_visible(main.width, main.height);
-            let covers: Vec<Option<String>> = app
-                .favorites
-                .iter()
-                .map(|album| album.cover_art.clone())
-                .collect();
-            match app.favorites_layout {
-                AlbumLayout::List => collect_list_placements(
-                    app,
-                    main,
-                    &covers,
-                    app.favorite_scroll,
-                    app.favorite_selected + visible_albums(main),
-                ),
-                AlbumLayout::Grid => collect_grid_placements(
-                    app,
-                    main,
-                    &covers,
-                    app.favorite_scroll,
-                    app.favorite_selected,
-                ),
+        View::Favorites => match app.favorites_pane {
+            FavoritePane::Albums => {
+                app.ensure_favorite_visible(main.width, main.height);
+                let covers: Vec<Option<String>> = app
+                    .favorites
+                    .iter()
+                    .map(|album| album.cover_art.clone())
+                    .collect();
+                match app.favorites_layout {
+                    AlbumLayout::List => collect_list_placements(
+                        app,
+                        main,
+                        &covers,
+                        app.favorite_scroll,
+                        app.favorite_selected + visible_albums(main),
+                    ),
+                    AlbumLayout::Grid => collect_grid_placements(
+                        app,
+                        main,
+                        &covers,
+                        app.favorite_scroll,
+                        app.favorite_selected,
+                    ),
+                }
             }
-        }
+            FavoritePane::Artists => {
+                app.ensure_favorite_artist_visible(main.width, main.height);
+                let covers: Vec<Option<String>> = app
+                    .favorite_artists
+                    .iter()
+                    .map(|artist| artist.cover_art.clone())
+                    .collect();
+                match app.favorite_artists_layout {
+                    AlbumLayout::List => collect_list_placements(
+                        app,
+                        main,
+                        &covers,
+                        app.favorite_artist_scroll,
+                        app.favorite_artist_selected + visible_albums(main),
+                    ),
+                    AlbumLayout::Grid => collect_grid_placements(
+                        app,
+                        main,
+                        &covers,
+                        app.favorite_artist_scroll,
+                        app.favorite_artist_selected,
+                    ),
+                }
+            }
+        },
         View::ListenLater => {
             app.ensure_listen_visible(main.width, main.height);
             let visible = visible_albums(main);
@@ -719,7 +746,13 @@ fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
     let counter = match app.view {
         View::Albums => format!("{} / {}", app.selected + 1, app.albums.len()),
         View::Artists => format!("{} / {}", app.artist_selected + 1, app.artists.len()),
-        View::Favorites => format!("{}", app.favorites.len()),
+        View::Favorites => format!(
+            "{}",
+            match app.favorites_pane {
+                FavoritePane::Albums => app.favorites.len(),
+                FavoritePane::Artists => app.favorite_artists.len(),
+            }
+        ),
         View::ListenLater => format!("{}", app.listen_albums.len()),
         View::Search => format!("{} / {}", app.search.selected + 1, app.search.hits.len()),
         View::Playlists => format!("{}", app.playlists.len()),
@@ -737,7 +770,14 @@ fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
         View::ArtistDetail => app
             .artist_detail
             .as_ref()
-            .map(|artist| artist.name.clone())
+            .map(|artist| {
+                // The page is where `*` is pressed, so it shows the answer.
+                if artist.starred.is_some() {
+                    format!("★ {}", artist.name)
+                } else {
+                    artist.name.clone()
+                }
+            })
             .unwrap_or_default(),
         View::Help => String::new(),
     };
@@ -747,6 +787,22 @@ fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(sort) = sort {
         spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
         spans.push(Span::styled(sort, Style::default().fg(ACCENT)));
+    }
+    // The starred page holds two lists, so its header names both and bolds the
+    // one on screen: a page whose only label is "Starred" would leave the
+    // artists half of it unfindable.
+    if app.view == View::Favorites {
+        for pane in [FavoritePane::Albums, FavoritePane::Artists] {
+            spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+            let style = if pane == app.favorites_pane {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(MUTED)
+            };
+            spans.push(Span::styled(pane.label(), style));
+        }
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)),
@@ -1026,33 +1082,48 @@ fn draw_symbol_cover(frame: &mut Frame, app: &App, key: &str, slot: Rect) {
 }
 
 fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {
-    match app.artist_layout {
+    draw_artist_listing(
+        frame,
+        app,
+        area,
+        &app.artists,
+        app.artist_selected,
+        app.artist_scroll,
+        app.artist_layout,
+        ALL_MARKS,
+    );
+}
+
+/// Artist rows, shared by the artists page and the starred page's artists.
+#[allow(clippy::too_many_arguments)]
+fn draw_artist_listing(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    artists: &[Artist],
+    selected: usize,
+    scroll: usize,
+    layout: AlbumLayout,
+    marks: Marks,
+) {
+    match layout {
         AlbumLayout::Grid => {
-            let tiles: Vec<Tile> = app
-                .artists
+            let tiles: Vec<Tile> = artists
                 .iter()
                 .map(|artist| Tile {
                     cover: artist.cover_art.as_deref(),
                     label: &artist.name,
-                    starred: artist.starred.is_some(),
+                    starred: marks.star(artist.starred.is_some()),
                     // Artists have no place on the listen later shelf.
                     later: false,
                 })
                 .collect();
-            draw_wall(
-                frame,
-                app,
-                area,
-                &tiles,
-                app.artist_selected,
-                app.artist_scroll,
-            );
+            draw_wall(frame, app, area, &tiles, selected, scroll);
         }
         AlbumLayout::List => {
-            let rows = usize::from(area.height / ROW_HEIGHT).max(1);
-            for slot in 0..rows {
-                let index = app.artist_scroll + slot;
-                let Some(artist) = app.artists.get(index) else {
+            for slot in 0..visible_albums(area) {
+                let index = scroll + slot;
+                let Some(artist) = artists.get(index) else {
                     break;
                 };
                 let albums = artist
@@ -1068,8 +1139,8 @@ fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {
                     &artist.name,
                     &albums,
                     None,
-                    index == app.artist_selected,
-                    artist.starred.is_some(),
+                    index == selected,
+                    marks.star(artist.starred.is_some()),
                     false,
                 );
             }
@@ -1456,25 +1527,55 @@ fn draw_pane_title(frame: &mut Frame, label: &str, pane: Rect, focused: bool) {
 }
 
 fn draw_favorites(frame: &mut Frame, app: &App, area: Rect) {
-    if app.favorites.is_empty() {
-        frame.render_widget(
-            Paragraph::new("Nothing starred yet. Press * on an album to keep it here.")
-                .style(Style::default().fg(MUTED)),
-            area,
-        );
-        return;
+    match app.favorites_pane {
+        FavoritePane::Albums => {
+            draw_album_listing(
+                frame,
+                app,
+                area,
+                &app.favorites,
+                app.favorite_selected,
+                app.favorite_scroll,
+                app.favorites_layout,
+                // Every album here is starred; the star would say nothing.
+                NO_STAR,
+            );
+            if app.favorites.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(empty_favorites(app.favorites_pane))
+                        .style(Style::default().fg(MUTED)),
+                    area,
+                );
+            }
+        }
+        FavoritePane::Artists => {
+            draw_artist_listing(
+                frame,
+                app,
+                area,
+                &app.favorite_artists,
+                app.favorite_artist_selected,
+                app.favorite_artist_scroll,
+                app.favorite_artists_layout,
+                NO_STAR,
+            );
+            if app.favorite_artists.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(empty_favorites(app.favorites_pane))
+                        .style(Style::default().fg(MUTED)),
+                    area,
+                );
+            }
+        }
     }
-    draw_album_listing(
-        frame,
-        app,
-        area,
-        &app.favorites,
-        app.favorite_selected,
-        app.favorite_scroll,
-        app.favorites_layout,
-        // Every album here is starred; the star would say nothing.
-        NO_STAR,
-    );
+}
+
+/// What an empty starred list says: the key that would fill it.
+fn empty_favorites(pane: FavoritePane) -> &'static str {
+    match pane {
+        FavoritePane::Albums => "Nothing starred yet. Press * on an album to keep it here.",
+        FavoritePane::Artists => "No starred artists. Press * on an artist to keep it here.",
+    }
 }
 
 /// One tile of a wall: a cover and the line of text under it.
@@ -1995,7 +2096,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         HelpRow::Key("4", "listen later page"),
         HelpRow::Key("x", "queue: remove"),
         HelpRow::Key("J / K", "queue: move"),
-        HelpRow::Key("Tab", "artist: next pane"),
+        HelpRow::Key("Tab", "next pane"),
         HelpRow::Key("t", "artist: song list"),
     ];
 
@@ -2343,7 +2444,7 @@ fn key_hints(view: View) -> &'static str {
         View::AlbumDetail => "Enter play · a next · A end · i artist · h back",
         View::Artists => "S sort · w layout · Enter open · h back",
         View::ArtistDetail => "Tab pane · t songs · a next · A end · h back",
-        View::Favorites => "w layout · a next · A end · * unstar",
+        View::Favorites => "Tab pane · w layout · a next · A end · * unstar",
         View::ListenLater => "w layout · z remove · a next · A end",
         View::Playlists => "Enter open · h back",
         View::Search => "/ edit · Enter open · a next · A end",
@@ -3506,6 +3607,76 @@ mod tests {
             app.view = view;
             let _ = rendered_text(&app, 40, 12);
         }
+    }
+
+    #[test]
+    fn a_starred_artist_wears_the_star_on_the_artists_page() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let mut starred = undertone_artist("ar-1", "Aphex Twin", 3);
+        starred.starred = Some("2020-01-01".into());
+        app.artists = vec![starred, undertone_artist("ar-2", "Boards of Canada", 1)];
+        app.view = View::Artists;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(text.contains("★ Aphex Twin"), "{text}");
+        assert!(!text.contains("★ Boards"), "only the starred one: {text}");
+    }
+
+    #[test]
+    fn the_starred_page_names_both_of_its_lists() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.view = View::Favorites;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            text.contains("albums · artists"),
+            "the artists list has to be findable: {text}"
+        );
+        assert!(
+            text.contains("Press * on an album"),
+            "and the empty list says how to fill it: {text}"
+        );
+
+        app.favorites_pane = FavoritePane::Artists;
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            text.contains("Press * on an artist"),
+            "the artists half has its own hint: {text}"
+        );
+    }
+
+    #[test]
+    fn the_starred_artists_pane_lists_artists_without_the_star() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let mut starred = undertone_artist("ar-1", "Aphex Twin", 3);
+        starred.starred = Some("2020-01-01".into());
+        app.favorite_artists = vec![starred];
+        app.favorites_pane = FavoritePane::Artists;
+        app.view = View::Favorites;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(text.contains("Aphex Twin"), "{text}");
+        assert!(text.contains("3 albums"), "{text}");
+        assert!(
+            !text.contains("★"),
+            "everyone here is starred, so the star says nothing: {text}"
+        );
+    }
+
+    #[test]
+    fn the_artist_page_shows_the_star_it_can_toggle() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Aphex Twin".into(),
+            starred: Some("2020-01-01".into()),
+            album: vec![album_with_cover("1")],
+            ..Default::default()
+        });
+        app.view = View::ArtistDetail;
+
+        let text = rendered_text(&app, 100, 24);
+        assert!(text.contains("★ Aphex Twin"), "{text}");
     }
 
     fn undertone_artist(id: &str, name: &str, albums: u32) -> crate::subsonic::Artist {

@@ -183,6 +183,42 @@ impl ArtistPane {
     }
 }
 
+/// The starred page's two lists, one on screen at a time.
+///
+/// Albums and artists are both things you star, but they are not the same kind
+/// of row: an album opens a track list, an artist opens a page of albums. So
+/// each list keeps its own cursor, scroll and layout, and Tab says which one
+/// the keyboard is talking to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FavoritePane {
+    #[default]
+    Albums,
+    Artists,
+}
+
+impl FavoritePane {
+    pub fn next(self) -> Self {
+        match self {
+            FavoritePane::Albums => FavoritePane::Artists,
+            FavoritePane::Artists => FavoritePane::Albums,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            FavoritePane::Albums => FavoritePane::Artists,
+            FavoritePane::Artists => FavoritePane::Albums,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FavoritePane::Albums => "albums",
+            FavoritePane::Artists => "artists",
+        }
+    }
+}
+
 /// What the artist page's left pane is showing.
 ///
 /// The page keeps three panes; this is a tab inside the first one, because
@@ -473,6 +509,13 @@ pub struct App {
     pub favorites: Vec<Album>,
     pub favorite_selected: usize,
     pub favorite_scroll: usize,
+    /// Starred artists, the starred page's other list.
+    pub favorite_artists: Vec<Artist>,
+    pub favorite_artist_selected: usize,
+    pub favorite_artist_scroll: usize,
+    pub favorite_artists_layout: AlbumLayout,
+    /// Which of the two starred lists has the keyboard.
+    pub favorites_pane: FavoritePane,
     /// The track Auto DJ last tried to extend from, so one barren track is not
     /// retried on every transition.
     pub auto_dj_seed: Option<String>,
@@ -508,6 +551,15 @@ pub struct App {
     /// Size of one terminal cell in pixels. Art is sized in real pixels, so
     /// this decides how much of a tile a cover fills.
     pub cell: CellSize,
+}
+
+/// What `*` would act on at the cursor.
+///
+/// The star is the same request for both - the server takes any id - but each
+/// keeps its own lists, so the local patching has to know which it is.
+enum StarTarget {
+    Album { id: String, starred: bool },
+    Artist { id: String, starred: bool },
 }
 
 impl App {
@@ -579,6 +631,11 @@ impl App {
             favorites: Vec::new(),
             favorite_selected: 0,
             favorite_scroll: 0,
+            favorite_artists: Vec::new(),
+            favorite_artist_selected: 0,
+            favorite_artist_scroll: 0,
+            favorite_artists_layout: AlbumLayout::List,
+            favorites_pane: FavoritePane::Albums,
             auto_dj_seed: None,
             pending_seek: None,
             selected: 0,
@@ -1253,17 +1310,21 @@ impl App {
 
     // ------------------------------------------------------------- favourites
 
-    /// Starred albums (`3`).
+    /// Starred albums and artists (`3`).
     pub fn open_favorites(&mut self) {
         match self.client.starred() {
             Ok(starred) => {
                 self.favorites = starred.album;
+                self.favorite_artists = starred.artist;
                 self.favorite_selected = self
                     .favorite_selected
                     .min(self.favorites.len().saturating_sub(1));
+                self.favorite_artist_selected = self
+                    .favorite_artist_selected
+                    .min(self.favorite_artists.len().saturating_sub(1));
                 self.jump_to_view(View::Favorites);
-                if self.favorites.is_empty() {
-                    self.status("nothing starred yet - press * on an album");
+                if self.favorites.is_empty() && self.favorite_artists.is_empty() {
+                    self.status("nothing starred yet - press * on an album or an artist");
                 }
             }
             Err(err) => self.error(format!("could not load favourites: {err}")),
@@ -1275,7 +1336,10 @@ impl App {
         let album = match self.view {
             View::Albums => self.albums.get(self.selected),
             View::ListenLater => self.listen_albums.get(self.listen_selected),
-            View::Favorites => self.favorites.get(self.favorite_selected),
+            View::Favorites => match self.favorites_pane {
+                FavoritePane::Albums => self.favorites.get(self.favorite_selected),
+                FavoritePane::Artists => None,
+            },
             View::ArtistDetail => self
                 .artist_detail
                 .as_ref()
@@ -1286,16 +1350,25 @@ impl App {
         Some((album.clone(), album.starred.is_some()))
     }
 
-    /// `*`: star or unstar the album under the cursor.
+    /// `*`: star or unstar whatever the cursor is on.
+    ///
+    /// An album in every album list, an artist on the artists page and on the
+    /// artist page, and either one on the starred page, where both kinds of row
+    /// live. The server's star takes any id, so artists need no second request.
     pub fn toggle_star(&mut self) {
-        let Some((album, starred)) = self.album_under_cursor() else {
-            self.status("no album under the cursor");
+        let Some(target) = self.star_target() else {
+            self.status("nothing here to star");
             return;
         };
+        let (id, starred) = match &target {
+            StarTarget::Album { id, starred } | StarTarget::Artist { id, starred } => {
+                (id.clone(), *starred)
+            }
+        };
         let result = if starred {
-            self.client.unstar(&album.id)
+            self.client.unstar(&id)
         } else {
-            self.client.star(&album.id)
+            self.client.star(&id)
         };
         match result {
             Ok(()) => {
@@ -1304,9 +1377,46 @@ impl App {
                 // key feel laggy on a slow link. No status line either: the
                 // star appearing in the row is the feedback, and a message
                 // saying what the row already says is noise on the bar.
-                self.apply_star(&album.id, !starred);
+                match target {
+                    StarTarget::Album { .. } => self.apply_star(&id, !starred),
+                    StarTarget::Artist { .. } => self.apply_artist_star(&id, !starred),
+                }
             }
             Err(err) => self.error(format!("could not update star: {err}")),
+        }
+    }
+
+    /// What `*` would act on here, if anything.
+    fn star_target(&self) -> Option<StarTarget> {
+        match self.view {
+            View::Artists => {
+                let artist = self.artists.get(self.artist_selected)?;
+                Some(StarTarget::Artist {
+                    id: artist.id.clone(),
+                    starred: artist.starred.is_some(),
+                })
+            }
+            View::ArtistDetail => {
+                let detail = self.artist_detail.as_ref()?;
+                Some(StarTarget::Artist {
+                    id: detail.id.clone(),
+                    starred: detail.starred.is_some(),
+                })
+            }
+            View::Favorites if self.favorites_pane == FavoritePane::Artists => {
+                let artist = self.favorite_artists.get(self.favorite_artist_selected)?;
+                Some(StarTarget::Artist {
+                    id: artist.id.clone(),
+                    starred: artist.starred.is_some(),
+                })
+            }
+            _ => {
+                let (album, starred) = self.album_under_cursor()?;
+                Some(StarTarget::Album {
+                    id: album.id,
+                    starred,
+                })
+            }
         }
     }
 
@@ -1342,6 +1452,36 @@ impl App {
             self.favorites.retain(|album| album.id != album_id);
             if self.favorite_selected >= self.favorites.len() {
                 self.favorite_selected = self.favorites.len().saturating_sub(1);
+            }
+        }
+    }
+
+    /// The same for an artist: the lists it appears in, and the open page.
+    fn apply_artist_star(&mut self, artist_id: &str, starred: bool) {
+        let stamp = if starred {
+            Some(String::from("now"))
+        } else {
+            None
+        };
+        for artist in self
+            .artists
+            .iter_mut()
+            .chain(self.favorite_artists.iter_mut())
+        {
+            if artist.id == artist_id {
+                artist.starred = stamp.clone();
+            }
+        }
+        if let Some(detail) = self.artist_detail.as_mut() {
+            if detail.id == artist_id {
+                detail.starred = stamp;
+            }
+        }
+        if !starred {
+            self.favorite_artists
+                .retain(|artist| artist.id != artist_id);
+            if self.favorite_artist_selected >= self.favorite_artists.len() {
+                self.favorite_artist_selected = self.favorite_artists.len().saturating_sub(1);
             }
         }
     }
@@ -2003,7 +2143,10 @@ impl App {
         match view {
             View::Albums => Some(self.layout),
             View::Artists => Some(self.artist_layout),
-            View::Favorites => Some(self.favorites_layout),
+            View::Favorites => Some(match self.favorites_pane {
+                FavoritePane::Albums => self.favorites_layout,
+                FavoritePane::Artists => self.favorite_artists_layout,
+            }),
             View::ListenLater => Some(self.later_layout),
             _ => None,
         }
@@ -2016,10 +2159,16 @@ impl App {
                 self.artist_layout = layout;
                 self.artist_scroll = 0;
             }
-            View::Favorites => {
-                self.favorites_layout = layout;
-                self.favorite_scroll = 0;
-            }
+            View::Favorites => match self.favorites_pane {
+                FavoritePane::Albums => {
+                    self.favorites_layout = layout;
+                    self.favorite_scroll = 0;
+                }
+                FavoritePane::Artists => {
+                    self.favorite_artists_layout = layout;
+                    self.favorite_artist_scroll = 0;
+                }
+            },
             View::ListenLater => {
                 self.later_layout = layout;
                 self.listen_scroll = 0;
@@ -2148,6 +2297,16 @@ impl App {
             KeyCode::BackTab if self.view == View::ArtistDetail => {
                 self.artist_pane = self.artist_pane.prev()
             }
+            // The starred page holds two lists, so Tab picks which one you are
+            // talking to - the same key that walks the artist page's panes.
+            KeyCode::Tab if self.view == View::Favorites => {
+                self.favorites_pane = self.favorites_pane.next();
+                self.status(format!("starred: {}", self.favorites_pane.label()));
+            }
+            KeyCode::BackTab if self.view == View::Favorites => {
+                self.favorites_pane = self.favorites_pane.prev();
+                self.status(format!("starred: {}", self.favorites_pane.label()));
+            }
             KeyCode::Char('t') if self.view == View::ArtistDetail => {
                 self.artist_left = self.artist_left.next();
                 self.artist_pane = ArtistPane::Albums;
@@ -2222,7 +2381,10 @@ impl App {
                 // that knows how wide the pane is.
                 ArtistPane::Biography => self.artist_bio_lines,
             },
-            View::Favorites => self.favorites.len(),
+            View::Favorites => match self.favorites_pane {
+                FavoritePane::Albums => self.favorites.len(),
+                FavoritePane::Artists => self.favorite_artists.len(),
+            },
             View::Queue => self.queue.len(),
             View::ListenLater => self.listen_albums.len(),
             View::Search => self.search.hits.len(),
@@ -2249,7 +2411,10 @@ impl App {
                 ArtistPane::Similar => self.artist_similar_selected,
                 ArtistPane::Biography => self.artist_bio_scroll,
             },
-            View::Favorites => self.favorite_selected,
+            View::Favorites => match self.favorites_pane {
+                FavoritePane::Albums => self.favorite_selected,
+                FavoritePane::Artists => self.favorite_artist_selected,
+            },
             View::Queue => self.queue_cursor(),
             View::ListenLater => self.listen_selected,
             View::Playlists => self.playlist_selected,
@@ -2276,7 +2441,7 @@ impl App {
     }
 
     fn move_horizontal(&mut self, delta: i32) {
-        if self.layout == AlbumLayout::List {
+        if !self.in_wall() {
             return;
         }
         let len = self.cursor_len();
@@ -2307,7 +2472,10 @@ impl App {
                     self.artist_bio_scroll = next.min(max);
                 }
             },
-            View::Favorites => self.favorite_selected = next,
+            View::Favorites => match self.favorites_pane {
+                FavoritePane::Albums => self.favorite_selected = next,
+                FavoritePane::Artists => self.favorite_artist_selected = next,
+            },
             View::Queue => self.queue_pin = Some(next),
             View::ListenLater => self.listen_selected = next,
             View::Playlists | View::PlaylistDetail => self.playlist_selected = next,
@@ -2340,7 +2508,10 @@ impl App {
                 ArtistPane::Similar => self.artist_similar_selected = next,
                 ArtistPane::Biography => self.artist_bio_scroll = target.min(self.bio_max_scroll()),
             },
-            View::Favorites => self.favorite_selected = next,
+            View::Favorites => match self.favorites_pane {
+                FavoritePane::Albums => self.favorite_selected = next,
+                FavoritePane::Artists => self.favorite_artist_selected = next,
+            },
             View::Queue => self.queue_pin = Some(next),
             View::ListenLater => self.listen_selected = next,
             View::Playlists | View::PlaylistDetail => self.playlist_selected = next,
@@ -2419,11 +2590,22 @@ impl App {
                 // A biography has nothing to open.
                 ArtistPane::Biography => {}
             },
-            View::Favorites => {
-                if let Some(album) = self.favorites.get(self.favorite_selected).cloned() {
-                    self.open_album(album);
+            View::Favorites => match self.favorites_pane {
+                FavoritePane::Albums => {
+                    if let Some(album) = self.favorites.get(self.favorite_selected).cloned() {
+                        self.open_album(album);
+                    }
                 }
-            }
+                FavoritePane::Artists => {
+                    if let Some(artist) = self
+                        .favorite_artists
+                        .get(self.favorite_artist_selected)
+                        .cloned()
+                    {
+                        self.open_artist(&artist.id, &artist.name);
+                    }
+                }
+            },
             View::Help => {}
         }
     }
@@ -2482,6 +2664,26 @@ impl App {
                 scroll_grid(
                     &mut self.favorite_selected,
                     &mut self.favorite_scroll,
+                    wall.cols,
+                    wall.rows,
+                )
+            }
+        }
+    }
+
+    /// The same for the starred artists, which is a list of its own.
+    pub fn ensure_favorite_artist_visible(&mut self, width: u16, height: u16) {
+        match self.favorite_artists_layout {
+            AlbumLayout::List => scroll_into_view(
+                &mut self.favorite_artist_selected,
+                &mut self.favorite_artist_scroll,
+                list_rows(height),
+            ),
+            AlbumLayout::Grid => {
+                let wall = self.wall(width, height);
+                scroll_grid(
+                    &mut self.favorite_artist_selected,
+                    &mut self.favorite_artist_scroll,
                     wall.cols,
                     wall.rows,
                 )
@@ -2637,6 +2839,13 @@ impl App {
             self.favorites_layout = layout;
         }
         if let Some(layout) = session
+            .starred_artists_layout
+            .as_deref()
+            .and_then(AlbumLayout::from_key)
+        {
+            self.favorite_artists_layout = layout;
+        }
+        if let Some(layout) = session
             .later_layout
             .as_deref()
             .and_then(AlbumLayout::from_key)
@@ -2673,6 +2882,7 @@ impl App {
             artist_layout: Some(self.artist_layout.key().to_string()),
             layout: Some(self.layout.key().to_string()),
             starred_layout: Some(self.favorites_layout.key().to_string()),
+            starred_artists_layout: Some(self.favorite_artists_layout.key().to_string()),
             later_layout: Some(self.later_layout.key().to_string()),
             view: Some(self.view.key().to_string()),
         }
@@ -4293,8 +4503,141 @@ mod tests {
         app.handle_key(key(KeyCode::Char('*')));
 
         let status = app.status.as_ref().expect("a message");
-        assert!(status.text.contains("no album"), "{}", status.text);
+        assert!(status.text.contains("nothing"), "{}", status.text);
         assert!(!status.error, "an empty cursor is not an error");
+    }
+
+    fn an_artist(id: &str, name: &str) -> Artist {
+        Artist {
+            id: id.to_string(),
+            name: name.to_string(),
+            starred: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn tab_swaps_the_starred_pages_lists() {
+        let mut app = app();
+        app.view = View::Favorites;
+        app.favorites = vec![Album {
+            id: "al-1".into(),
+            ..Default::default()
+        }];
+        app.favorite_artists = vec![an_artist("ar-1", "Aphex Twin")];
+
+        assert_eq!(app.favorites_pane, FavoritePane::Albums);
+        assert_eq!(app.cursor_len(), 1);
+        assert_eq!(app.cursor(), 0);
+
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.favorites_pane, FavoritePane::Artists);
+        assert_eq!(app.cursor_len(), 1, "the artists list has its own length");
+        assert_eq!(
+            app.status.as_ref().map(|status| status.text.as_str()),
+            Some("starred: artists")
+        );
+
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.favorites_pane, FavoritePane::Albums);
+
+        // Each list keeps its own cursor, so moving in one does not move the
+        // other.
+        app.favorite_artists
+            .push(an_artist("ar-2", "Boards of Canada"));
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.favorite_artist_selected, 1);
+        assert_eq!(app.favorite_selected, 0);
+    }
+
+    #[test]
+    fn each_starred_list_keeps_its_own_wall() {
+        let mut app = app();
+        app.view = View::Favorites;
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(app.favorites_layout, AlbumLayout::Grid);
+        assert_eq!(
+            app.favorite_artists_layout,
+            AlbumLayout::List,
+            "the other list is left alone"
+        );
+
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(app.favorite_artists_layout, AlbumLayout::Grid);
+        assert_eq!(app.favorites_layout, AlbumLayout::Grid);
+    }
+
+    #[test]
+    fn star_points_at_the_row_the_cursor_is_on() {
+        let mut app = app();
+        app.artists = vec![an_artist("ar-1", "Aphex Twin")];
+        app.view = View::Artists;
+        assert!(matches!(
+            app.star_target(),
+            Some(StarTarget::Artist { ref id, starred: false }) if id == "ar-1"
+        ));
+
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-2".into(),
+            name: "Boards of Canada".into(),
+            ..Default::default()
+        });
+        app.view = View::ArtistDetail;
+        assert!(matches!(
+            app.star_target(),
+            Some(StarTarget::Artist { ref id, .. }) if id == "ar-2"
+        ));
+
+        // The starred page answers with whichever list is on screen.
+        app.view = View::Favorites;
+        app.favorites = vec![Album {
+            id: "al-1".into(),
+            ..Default::default()
+        }];
+        app.favorite_artists = vec![an_artist("ar-3", "Autechre")];
+        assert!(matches!(
+            app.star_target(),
+            Some(StarTarget::Album { ref id, .. }) if id == "al-1"
+        ));
+        app.favorites_pane = FavoritePane::Artists;
+        assert!(matches!(
+            app.star_target(),
+            Some(StarTarget::Artist { ref id, .. }) if id == "ar-3"
+        ));
+    }
+
+    #[test]
+    fn starring_an_artist_marks_it_and_unstarring_removes_it() {
+        let mut app = app();
+        app.artists = vec![an_artist("ar-1", "Aphex Twin")];
+        app.favorite_artists = vec![an_artist("ar-1", "Aphex Twin")];
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Aphex Twin".into(),
+            ..Default::default()
+        });
+
+        app.apply_artist_star("ar-1", true);
+        assert!(app.artists[0].starred.is_some());
+        assert!(app.favorite_artists[0].starred.is_some());
+        assert!(app
+            .artist_detail
+            .as_ref()
+            .is_some_and(|detail| detail.starred.is_some()));
+
+        app.favorite_artist_selected = 0;
+        app.apply_artist_star("ar-1", false);
+        assert!(app.artists[0].starred.is_none());
+        assert!(
+            app.favorite_artists.is_empty(),
+            "an unstarred artist leaves the starred list"
+        );
+        assert!(app
+            .artist_detail
+            .as_ref()
+            .is_some_and(|detail| detail.starred.is_none()));
     }
 
     // ------------------------------------------------------------------ sorts
