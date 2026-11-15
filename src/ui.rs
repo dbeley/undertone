@@ -36,6 +36,67 @@ fn selected_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD).fg(ACCENT)
 }
 
+/// The marks an album row or tile can wear, in draw order.
+///
+/// Star first, then the listen-later clock, one space each, so both marks land
+/// in the same cells on every screen and a row reads the same way whatever it
+/// carries.
+const STAR_MARK: &str = "★ ";
+const LATER_MARK: &str = "◷ ";
+
+fn mark_prefix(starred: bool, later: bool) -> String {
+    let mut prefix = String::new();
+    if starred {
+        prefix.push_str(STAR_MARK);
+    }
+    if later {
+        prefix.push_str(LATER_MARK);
+    }
+    prefix
+}
+
+/// Which marks a listing is allowed to draw.
+///
+/// A page built around one reason does not repeat that reason on every row: the
+/// starred page knows why its albums are there, and so does listen later.
+/// Repeating it would mark every row the same way, which is the same as marking
+/// none of them - so each of those pages drops its own mark and keeps the other.
+#[derive(Clone, Copy)]
+struct Marks {
+    star: bool,
+    later: bool,
+}
+
+/// Every mark a listing can wear: the library, an artist's albums, an album page.
+const ALL_MARKS: Marks = Marks {
+    star: true,
+    later: true,
+};
+
+/// The starred page: no star, but a saved album still says so.
+const NO_STAR: Marks = Marks {
+    star: false,
+    later: true,
+};
+
+/// Listen later: no clock, but a starred album still says so.
+const NO_LATER: Marks = Marks {
+    star: true,
+    later: false,
+};
+
+impl Marks {
+    /// The album's star, unless this page is the one that collects stars.
+    fn star(self, starred: bool) -> bool {
+        self.star && starred
+    }
+
+    /// The same for the clock, on the page that collects saved albums.
+    fn later(self, saved: bool) -> bool {
+        self.later && saved
+    }
+}
+
 /// A track that is playing without being selected: the accent colour says it is
 /// making sound, without the bold that says Enter goes here.
 fn playing_style() -> Style {
@@ -723,6 +784,7 @@ fn draw_albums(frame: &mut Frame, app: &App, area: Rect) {
         app.selected,
         app.scroll,
         app.layout,
+        ALL_MARKS,
     );
 
     if app.albums.is_empty() {
@@ -765,11 +827,14 @@ fn draw_listen_later(frame: &mut Frame, app: &App, area: Rect) {
         app.listen_selected,
         app.listen_scroll,
         app.later_layout,
+        // Every row here is saved for later; the clock would say nothing.
+        NO_LATER,
     );
 }
 
 /// Album rows, shared by the library list, listen later and favourites.
 /// Albums, as rows or as a wall, whichever the view is set to.
+#[allow(clippy::too_many_arguments)]
 fn draw_album_listing(
     frame: &mut Frame,
     app: &App,
@@ -778,16 +843,18 @@ fn draw_album_listing(
     selected: usize,
     scroll: usize,
     layout: AlbumLayout,
+    marks: Marks,
 ) {
     match layout {
-        AlbumLayout::List => draw_album_rows(frame, app, area, albums, selected, scroll),
+        AlbumLayout::List => draw_album_rows(frame, app, area, albums, selected, scroll, marks),
         AlbumLayout::Grid => {
             let tiles: Vec<Tile> = albums
                 .iter()
                 .map(|album| Tile {
                     cover: album.cover_art.as_deref(),
                     label: &album.name,
-                    starred: album.starred.is_some(),
+                    starred: marks.star(album.starred.is_some()),
+                    later: marks.later(app.listen_later.contains(&album.id)),
                 })
                 .collect();
             draw_wall(frame, app, area, &tiles, selected, scroll);
@@ -802,6 +869,7 @@ fn draw_album_rows(
     albums: &[crate::subsonic::Album],
     selected: usize,
     scroll: usize,
+    marks: Marks,
 ) {
     for slot in 0..visible_albums(area) {
         let index = scroll + slot;
@@ -824,7 +892,8 @@ fn draw_album_rows(
             &format!("{artist}{year}"),
             tracks.as_deref(),
             index == selected,
-            album.starred.is_some(),
+            marks.star(album.starred.is_some()),
+            marks.later(app.listen_later.contains(&album.id)),
         );
     }
 }
@@ -833,7 +902,7 @@ fn draw_album_rows(
 ///
 /// Shared by every list view: albums, artists, favourites. Keeping one
 /// implementation is what stops the placeholder, the selection marker and the
-/// star prefix from drifting apart between screens.
+/// mark prefixes from drifting apart between screens.
 #[allow(clippy::too_many_arguments)]
 fn draw_row(
     frame: &mut Frame,
@@ -846,6 +915,7 @@ fn draw_row(
     detail: Option<&str>,
     selected: bool,
     starred: bool,
+    later: bool,
 ) {
     let row = album_row_rect(area, slot);
     let has_art = draw_row_thumb(frame, app, row, cover);
@@ -860,6 +930,8 @@ fn draw_row(
     // A starred row gets a quiet star and a bold title; an unstarred one gets
     // neither. Bolding every title, as this used to, left the star to carry the
     // whole mark on its own, three characters that are easy to scan past.
+    // A saved-for-later row gets the clock instead: it is a note about where the
+    // album is kept, not a claim on the title, so it stays out of the weight.
     let weight = if selected {
         selected_style()
     } else if starred {
@@ -868,9 +940,10 @@ fn draw_row(
         Style::default()
     };
     let mut head = Vec::new();
-    if starred {
+    let marks = mark_prefix(starred, later);
+    if !marks.is_empty() {
         head.push(Span::styled(
-            "★ ",
+            marks,
             if selected {
                 selected_style()
             } else {
@@ -962,6 +1035,8 @@ fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {
                     cover: artist.cover_art.as_deref(),
                     label: &artist.name,
                     starred: artist.starred.is_some(),
+                    // Artists have no place on the listen later shelf.
+                    later: false,
                 })
                 .collect();
             draw_wall(
@@ -995,6 +1070,7 @@ fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {
                     None,
                     index == app.artist_selected,
                     artist.starred.is_some(),
+                    false,
                 );
             }
         }
@@ -1073,7 +1149,8 @@ fn draw_artist_detail(frame: &mut Frame, app: &App, area: Rect) {
             &format!("{}{year}", album.artist.clone().unwrap_or_default()),
             tracks.as_deref(),
             index == app.artist_album_selected,
-            album.starred.is_some(),
+            ALL_MARKS.star(album.starred.is_some()),
+            ALL_MARKS.later(app.listen_later.contains(&album.id)),
         );
     }
 
@@ -1395,6 +1472,8 @@ fn draw_favorites(frame: &mut Frame, app: &App, area: Rect) {
         app.favorite_selected,
         app.favorite_scroll,
         app.favorites_layout,
+        // Every album here is starred; the star would say nothing.
+        NO_STAR,
     );
 }
 
@@ -1404,6 +1483,9 @@ struct Tile<'a> {
     label: &'a str,
     /// A starred cover wears the same mark as a starred row.
     starred: bool,
+    /// So does one that is saved for later, under the rules of the page it is
+    /// drawn on.
+    later: bool,
 }
 
 /// A wall of covers. Shared by the album list and the artist list.
@@ -1459,12 +1541,15 @@ fn draw_wall(
         }
 
         // One line of text under the cover; the tile is too narrow for more.
-        // The star sits after the selection marker so a starred tile can also
-        // be the selected one, and in the same place rows put it: before the
-        // name.
+        // The marks sit after the selection marker so a marked tile can also be
+        // the selected one, and in the same place rows put them: before the
+        // name, star then clock.
         let marker = if is_selected { "\u{25b8}" } else { " " };
-        let star = if tile.starred { "\u{2605} " } else { "" };
-        let label = format!("{marker}{star}{}", tile.label);
+        let label = format!(
+            "{marker}{}{}",
+            mark_prefix(tile.starred, tile.later),
+            tile.label
+        );
         frame.render_widget(
             Paragraph::new(label).style(if is_selected {
                 selected_style()
@@ -1513,11 +1598,15 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
         .year
         .map(|y| y.to_string())
         .unwrap_or_else(|| "n/a".to_string());
-    // The page is where `*` is pressed, so it has to show the answer: the star
-    // in the lists and the star here are the same mark.
+    // The page is where `*` and `z` are pressed, so it has to show the answer:
+    // the star in the lists and the star here are the same mark, and so is the
+    // clock.
     let mut head = Vec::new();
     if album.starred.is_some() {
         head.push(Span::styled("★ ", Style::default().fg(MUTED)));
+    }
+    if app.listen_later.contains(&album.id) {
+        head.push(Span::styled(LATER_MARK, Style::default().fg(MUTED)));
     }
     head.push(Span::styled(album.name.clone(), title_style()));
     let lines = vec![
@@ -3148,6 +3237,137 @@ mod tests {
         assert!(
             !text.contains("★ album b"),
             "an unstarred tile carries no mark: {text}"
+        );
+    }
+
+    /// Save an album the way `z` does, without a server.
+    fn save_for_later(app: &mut App, album: &Album) {
+        app.listen_later.toggle(album).expect("toggle listen later");
+        app.listen_albums = app.listen_later.albums();
+    }
+
+    #[test]
+    fn a_saved_album_is_marked_in_the_library() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.albums = vec![album_with_cover("a"), album_with_cover("b")];
+        let saved = app.albums[0].clone();
+        save_for_later(&mut app, &saved);
+        app.view = View::Albums;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            text.contains("◷ album a"),
+            "the clock sits before the title: {text}"
+        );
+        assert!(
+            !text.contains("◷ album b"),
+            "an unsaved album carries no clock: {text}"
+        );
+    }
+
+    #[test]
+    fn the_album_page_shows_the_marks_it_can_toggle() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let album = album_with_cover("a");
+        save_for_later(&mut app, &album);
+        app.detail = Some(album);
+        app.view = View::AlbumDetail;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            text.contains("◷ album a"),
+            "the page answers `z` where it is pressed: {text}"
+        );
+    }
+
+    #[test]
+    fn a_row_can_wear_both_marks() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let mut both = album_with_cover("a");
+        both.starred = Some("2020-01-01".into());
+        app.albums = vec![both.clone()];
+        save_for_later(&mut app, &both);
+        app.view = View::Albums;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            text.contains("★ ◷ album a"),
+            "star then clock, so the name starts in the same column: {text}"
+        );
+    }
+
+    #[test]
+    fn the_starred_page_does_not_repeat_the_star() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let mut starred = album_with_cover("a");
+        starred.starred = Some("2020-01-01".into());
+        app.favorites = vec![starred.clone()];
+        save_for_later(&mut app, &starred);
+        app.view = View::Favorites;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            !text.contains("★"),
+            "every row here is starred, so the star says nothing: {text}"
+        );
+        assert!(
+            text.contains("◷ album a"),
+            "being saved for later is still news here: {text}"
+        );
+    }
+
+    #[test]
+    fn the_starred_wall_does_not_repeat_the_star_either() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let mut starred = album_with_cover("a");
+        starred.starred = Some("2020-01-01".into());
+        app.favorites = vec![starred];
+        app.view = View::Favorites;
+        app.favorites_layout = AlbumLayout::Grid;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(!text.contains("★"), "the tiles drop the star too: {text}");
+    }
+
+    #[test]
+    fn listen_later_does_not_repeat_the_clock_but_keeps_the_star() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let album = album_with_cover("a");
+        save_for_later(&mut app, &album);
+        // Starred through the file, which is how the page rebuilds its rows.
+        app.listen_later
+            .set_starred("a", Some("2020-01-01".into()))
+            .expect("star");
+        app.open_listen_later();
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            !text.contains("◷"),
+            "every row here is saved, so the clock says nothing: {text}"
+        );
+        assert!(
+            text.contains("★ album a"),
+            "and the star survives the trip through the file: {text}"
+        );
+    }
+
+    #[test]
+    fn a_saved_album_is_marked_on_the_wall_too() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.albums = vec![album_with_cover("a"), album_with_cover("b")];
+        let saved = app.albums[0].clone();
+        save_for_later(&mut app, &saved);
+        app.view = View::Albums;
+        app.layout = AlbumLayout::Grid;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            text.contains("▸◷ album a"),
+            "the clock follows the selection marker: {text}"
+        );
+        assert!(
+            !text.contains("◷ album b"),
+            "an unsaved tile carries no mark: {text}"
         );
     }
 

@@ -30,6 +30,12 @@ pub struct Entry {
     pub year: Option<i32>,
     #[serde(default)]
     pub song_count: Option<u32>,
+    /// The album's star, copied at save time and kept in step afterwards.
+    ///
+    /// Without it the listen later page would be the one place a star could not
+    /// be seen: its rows are rebuilt from this file, not from the server.
+    #[serde(default)]
+    pub starred: Option<String>,
     /// Unix milliseconds; the list is ordered by this, newest first.
     #[serde(default)]
     pub added_at: u64,
@@ -44,6 +50,7 @@ impl Entry {
             cover_art: album.cover_art.clone(),
             year: album.year,
             song_count: album.song_count,
+            starred: album.starred.clone(),
             added_at: now_ms(),
         }
     }
@@ -57,6 +64,7 @@ impl Entry {
             cover_art: self.cover_art.clone(),
             year: self.year,
             song_count: self.song_count,
+            starred: self.starred.clone(),
             ..Default::default()
         }
     }
@@ -119,6 +127,18 @@ impl ListenLater {
 
     pub fn remove(&mut self, album_id: &str) -> io::Result<()> {
         self.entries.retain(|entry| entry.id != album_id);
+        self.save()
+    }
+
+    /// Keep a saved album's star in step with the server.
+    ///
+    /// Writes nothing when the album is not on the list: starring something in
+    /// the library should not rewrite a file that never mentions it.
+    pub fn set_starred(&mut self, album_id: &str, starred: Option<String>) -> io::Result<()> {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == album_id) else {
+            return Ok(());
+        };
+        entry.starred = starred;
         self.save()
     }
 
@@ -228,6 +248,45 @@ mod tests {
         assert_eq!(albums.len(), 1);
         assert_eq!(albums[0].name, "Album a");
         assert_eq!(albums[0].cover_art.as_deref(), Some("al-a"));
+    }
+
+    #[test]
+    fn a_star_survives_the_file_and_the_reload() {
+        let path = temp("starred");
+        let mut list = ListenLater::load(&path);
+        list.toggle(&album("a")).unwrap();
+        list.toggle(&album("b")).unwrap();
+
+        list.set_starred("a", Some("now".into())).unwrap();
+        let reloaded = ListenLater::load(&path);
+        let albums = reloaded.albums();
+        let starred = |id: &str| {
+            albums
+                .iter()
+                .find(|album| album.id == id)
+                .and_then(|album| album.starred.clone())
+        };
+        assert_eq!(starred("a").as_deref(), Some("now"));
+        assert_eq!(starred("b"), None);
+
+        // An album that was never saved is not worth a write.
+        let mut list = reloaded;
+        let before = fs::read(&path).unwrap();
+        list.set_starred("elsewhere", Some("now".into())).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_entry_saved_from_a_starred_album_keeps_its_star() {
+        let path = temp("starred-on-save");
+        let mut list = ListenLater::load(&path);
+        let mut starred = album("a");
+        starred.starred = Some("2020-01-01".into());
+        list.toggle(&starred).unwrap();
+        assert_eq!(
+            ListenLater::load(&path).albums()[0].starred.as_deref(),
+            Some("2020-01-01")
+        );
     }
 
     #[test]

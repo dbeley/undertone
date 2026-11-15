@@ -1332,6 +1332,12 @@ impl App {
                 album.starred = stamp.clone();
             }
         }
+        // The saved copy is what the listen later page redraws from, so it has
+        // to learn about the star too - otherwise the star vanishes the next
+        // time that page is opened.
+        if let Err(err) = self.listen_later.set_starred(album_id, stamp) {
+            self.error(format!("could not save listen later: {err}"));
+        }
         if !starred {
             self.favorites.retain(|album| album.id != album_id);
             if self.favorite_selected >= self.favorites.len() {
