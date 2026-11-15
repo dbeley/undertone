@@ -957,8 +957,9 @@ fn draw_album_rows(
 /// One list row: thumbnail, title, subtitle, and an optional third line.
 ///
 /// Shared by every list view: albums, artists, favourites. Keeping one
-/// implementation is what stops the placeholder, the selection marker and the
-/// mark prefixes from drifting apart between screens.
+/// implementation is what stops the placeholder, the selected title's style and
+/// the mark prefixes from drifting apart between screens. A selected row is told
+/// apart by its accent colour and weight alone: no glyph sits over the cover.
 #[allow(clippy::too_many_arguments)]
 fn draw_row(
     frame: &mut Frame,
@@ -974,7 +975,7 @@ fn draw_row(
     later: bool,
 ) {
     let row = album_row_rect(area, slot);
-    let has_art = draw_row_thumb(frame, app, row, cover);
+    draw_row_thumb(frame, app, row, cover);
 
     let gutter = app.list_thumb().cols + 1;
     let text_area = Rect {
@@ -1022,20 +1023,10 @@ fn draw_row(
         )));
     }
     frame.render_widget(Paragraph::new(lines), text_area);
-
-    if selected && !has_art {
-        let marker = Rect {
-            x: row.x,
-            y: row.y,
-            width: 1,
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new("▸").style(selected_style()), marker);
-    }
 }
 
-/// The thumbnail for one row, or its placeholder. Returns whether art is ready.
-fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) -> bool {
+/// The thumbnail for one row, or its placeholder.
+fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) {
     let thumb = app.list_thumb();
     let thumb_key = cover.map(|cover| {
         ArtService::key(
@@ -1063,7 +1054,6 @@ fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) 
     } else {
         draw_thumb_placeholder(frame, slot, cover.is_some());
     }
-    has_art
 }
 
 /// Paint a symbol cover into its slot, if the art is ready.
@@ -1642,15 +1632,9 @@ fn draw_wall(
         }
 
         // One line of text under the cover; the tile is too narrow for more.
-        // The marks sit after the selection marker so a marked tile can also be
-        // the selected one, and in the same place rows put them: before the
-        // name, star then clock.
-        let marker = if is_selected { "\u{25b8}" } else { " " };
-        let label = format!(
-            "{marker}{}{}",
-            mark_prefix(tile.starred, tile.later),
-            tile.label
-        );
+        // The marks come first, in the same order rows put them: star then clock.
+        // Selection is the accent colour and the weight, not a glyph.
+        let label = format!("{}{}", mark_prefix(tile.starred, tile.later), tile.label);
         frame.render_widget(
             Paragraph::new(label).style(if is_selected {
                 selected_style()
@@ -3332,8 +3316,8 @@ mod tests {
 
         let text = rendered_text(&app, 80, 24);
         assert!(
-            text.contains("▸★ album a"),
-            "the star follows the selection marker: {text}"
+            text.contains("★ album a"),
+            "the selected tile carries its star first: {text}"
         );
         assert!(
             !text.contains("★ album b"),
@@ -3463,8 +3447,8 @@ mod tests {
 
         let text = rendered_text(&app, 80, 24);
         assert!(
-            text.contains("▸◷ album a"),
-            "the clock follows the selection marker: {text}"
+            text.contains("◷ album a"),
+            "the selected tile carries its clock first: {text}"
         );
         assert!(
             !text.contains("◷ album b"),

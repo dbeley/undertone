@@ -16,7 +16,7 @@ Album list, with the rail, the list's own header and the three-column bar.
 
 ```
 ▸ Albums   1│ Albums · random                                                                      1 / 3
-  Artists  2│ ▸ ▚ ▚  Fixture One
+  Artists  2│ ▚ ▚ ▚  Fixture One
   Starred  3│        Test Artist · 2000
   Later    4│        3 tracks
   Lists    5│ ▚ ▚ ▚  Fixture Two
@@ -58,7 +58,7 @@ Enter on an album to start         │S sort · w layout · a next · A  │end 
   Later    4│
   Lists    5│
   Queue    6│
-            │ ▸Fixture One    Fixture Two    Third
+            │ Fixture One    Fixture Two    Third
             │
             │
             │
@@ -201,7 +201,7 @@ Artists as a list; `w` turns this into a wall of covers.
 
 ```
   Albums   1│ Artists · most albums                                                                1 / 1
-▸ Artists  2│ ▸      Test Artist
+▸ Artists  2│        Test Artist
   Starred  3│        3 albums
   Later    4│
   Lists    5│
@@ -239,7 +239,7 @@ Three panes: albums, similar artists, biography. Tab moves between them.
 ```
   Albums   1│ Artist                                                                         Test Artist
 ▸ Artists  2│ albums · top songs                            │ similar
-  Starred  3│ ▸ ▚ ▚  Fixture One                            │ Similar One
+  Starred  3│ ▚ ▚ ▚  Fixture One                            │ Similar One
   Later    4│        Test Artist · 2000                     │ Similar Two
   Lists    5│        3 tracks                               │
   Queue    6│ ▚ ▚ ▚  Fixture Two                            │
