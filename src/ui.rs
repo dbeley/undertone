@@ -37,6 +37,29 @@ fn selected_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD).fg(ACCENT)
 }
 
+/// The bar behind the selected row, or under the selected tile's name.
+///
+/// A box was the obvious way to make a chosen row louder, but a border needs a
+/// line of its own above and below: at three lines per row that would mean five,
+/// and a third fewer albums on the screen. A filled bar says the same thing
+/// without spending a cell, and the covers sit inside it rather than fighting
+/// it.
+fn bar_style() -> Style {
+    Style::default().bg(ACCENT)
+}
+
+/// Text on that bar. The accent moves to the background, so the foreground has
+/// to leave it: black on the accent stays legible in the sixteen colours this
+/// runs in, where the accent as a foreground would vanish into its own bar.
+fn on_bar(bold: bool) -> Style {
+    let style = Style::default().fg(Color::Black).bg(ACCENT);
+    if bold {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
 /// The marks an album row or tile can wear, in draw order.
 ///
 /// Star first, then the listen-later clock, one space each, so both marks land
@@ -853,15 +876,12 @@ fn draw_albums(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Placeholder shown where a cover has not been painted yet.
-fn draw_thumb_placeholder(frame: &mut Frame, rect: Rect, has_cover: bool) {
+fn draw_thumb_placeholder(frame: &mut Frame, rect: Rect, has_cover: bool, style: Style) {
     if !has_cover {
         return;
     }
     let glyph = "▚ ".repeat(usize::from(rect.width) / 2);
-    frame.render_widget(
-        Paragraph::new(glyph).style(Style::default().fg(MUTED)),
-        rect,
-    );
+    frame.render_widget(Paragraph::new(glyph).style(style), rect);
 }
 
 fn draw_listen_later(frame: &mut Frame, app: &App, area: Rect) {
@@ -957,9 +977,9 @@ fn draw_album_rows(
 /// One list row: thumbnail, title, subtitle, and an optional third line.
 ///
 /// Shared by every list view: albums, artists, favourites. Keeping one
-/// implementation is what stops the placeholder, the selected title's style and
-/// the mark prefixes from drifting apart between screens. A selected row is told
-/// apart by its accent colour and weight alone: no glyph sits over the cover.
+/// implementation is what stops the placeholder, the selection bar and the mark
+/// prefixes from drifting apart between screens. A selected row is the accent
+/// as a filled bar behind it, with no glyph over the cover.
 #[allow(clippy::too_many_arguments)]
 fn draw_row(
     frame: &mut Frame,
@@ -975,7 +995,12 @@ fn draw_row(
     later: bool,
 ) {
     let row = album_row_rect(area, slot);
-    draw_row_thumb(frame, app, row, cover);
+    // The bar goes down first, so the cover and the placeholder are painted on
+    // top of it rather than punching a gap in it.
+    if selected {
+        frame.render_widget(Paragraph::new("").style(bar_style()), row);
+    }
+    draw_row_thumb(frame, app, row, cover, selected);
 
     let gutter = app.list_thumb().cols + 1;
     let text_area = Rect {
@@ -990,7 +1015,7 @@ fn draw_row(
     // A saved-for-later row gets the clock instead: it is a note about where the
     // album is kept, not a claim on the title, so it stays out of the weight.
     let weight = if selected {
-        selected_style()
+        on_bar(true)
     } else if starred {
         title_style()
     } else {
@@ -1002,31 +1027,36 @@ fn draw_row(
         head.push(Span::styled(
             marks,
             if selected {
-                selected_style()
+                on_bar(false)
             } else {
                 Style::default().fg(MUTED)
             },
         ));
     }
     head.push(Span::styled(title.to_string(), weight));
+    let quiet = if selected {
+        on_bar(false)
+    } else {
+        Style::default().fg(MUTED)
+    };
     let mut lines = vec![
         Line::from(head),
-        Line::from(Span::styled(
-            subtitle.to_string(),
-            Style::default().fg(MUTED),
-        )),
+        Line::from(Span::styled(subtitle.to_string(), quiet)),
     ];
     if let Some(detail) = detail {
-        lines.push(Line::from(Span::styled(
-            detail.to_string(),
-            Style::default().fg(Color::DarkGray),
-        )));
+        lines.push(Line::from(Span::styled(detail.to_string(), quiet)));
     }
     frame.render_widget(Paragraph::new(lines), text_area);
 }
 
 /// The thumbnail for one row, or its placeholder.
-fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) {
+fn draw_row_thumb(
+    frame: &mut Frame,
+    app: &App,
+    row: Rect,
+    cover: Option<&str>,
+    on_selection: bool,
+) {
     let thumb = app.list_thumb();
     let thumb_key = cover.map(|cover| {
         ArtService::key(
@@ -1052,7 +1082,14 @@ fn draw_row_thumb(frame: &mut Frame, app: &App, row: Rect, cover: Option<&str>) 
             draw_symbol_cover(frame, app, key, slot);
         }
     } else {
-        draw_thumb_placeholder(frame, slot, cover.is_some());
+        // The placeholder keeps the bar's background, or the selected row would
+        // have a hole in it exactly where the cover will land.
+        let quiet = if on_selection {
+            on_bar(false)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        draw_thumb_placeholder(frame, slot, cover.is_some(), quiet);
     }
 }
 
@@ -1628,7 +1665,12 @@ fn draw_wall(
                 draw_symbol_cover(frame, app, key, thumb);
             }
         } else {
-            draw_thumb_placeholder(frame, thumb, tile.cover.is_some());
+            draw_thumb_placeholder(
+                frame,
+                thumb,
+                tile.cover.is_some(),
+                Style::default().fg(MUTED),
+            );
         }
 
         // One line of text under the cover; the tile is too narrow for more.
@@ -2604,15 +2646,20 @@ mod tests {
         }
     }
 
-    /// Render one frame into an offscreen buffer and return its text.
-    ///
-    /// Placements are exercised elsewhere; this is for what the user reads.
-    fn rendered_text(app: &App, width: u16, height: u16) -> String {
+    /// Render one frame into an offscreen buffer.
+    fn rendered_buffer(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
         terminal.draw(|frame| draw(frame, app)).expect("draw");
-        let buffer = terminal.backend().buffer();
+        terminal.backend().buffer().clone()
+    }
+
+    /// Render one frame into an offscreen buffer and return its text.
+    ///
+    /// Placements are exercised elsewhere; this is for what the user reads.
+    fn rendered_text(app: &App, width: u16, height: u16) -> String {
+        let buffer = rendered_buffer(app, width, height);
         let mut text = String::new();
         for y in 0..height {
             for x in 0..width {
@@ -3323,6 +3370,37 @@ mod tests {
             !text.contains("★ album b"),
             "an unstarred tile carries no mark: {text}"
         );
+    }
+
+    #[test]
+    fn only_the_selected_row_sits_on_the_bar() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.albums = vec![album_with_cover("a"), album_with_cover("b")];
+        app.view = View::Albums;
+        app.selected = 0;
+
+        let (width, height) = (100, 30);
+        let buffer = rendered_buffer(&app, width, height);
+        let body = shell_layout(Rect::new(0, 0, width, height)).body;
+
+        // The bar runs the whole row, cover slot included: the placeholder is
+        // painted on it rather than punching a hole where the cover will land.
+        for x in body.x..body.x + body.width {
+            assert_eq!(
+                buffer[(x, body.y)].bg,
+                ACCENT,
+                "the selected row is filled to column {x}"
+            );
+        }
+        for y in body.y + ROW_HEIGHT..body.y + 2 * ROW_HEIGHT {
+            for x in body.x..body.x + body.width {
+                assert_ne!(
+                    buffer[(x, y)].bg,
+                    ACCENT,
+                    "the row below the selection keeps the plain background"
+                );
+            }
+        }
     }
 
     /// Save an album the way `z` does, without a server.
