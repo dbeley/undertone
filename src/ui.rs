@@ -43,7 +43,7 @@ fn playing_style() -> Style {
 }
 
 /// Rows the now-playing bar occupies, top border included: two lines beside
-/// the cover — track and clock, then progress plus album/format/next.
+/// the cover - track and clock, then progress plus album/format/next.
 /// Rows the bottom bar occupies, top border included: a title line and a
 /// progress line for the track, state and keys, then the queue preview.
 pub const BAR_HEIGHT: u16 = 5;
@@ -1512,7 +1512,7 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
     let year = album
         .year
         .map(|y| y.to_string())
-        .unwrap_or_else(|| "—".to_string());
+        .unwrap_or_else(|| "n/a".to_string());
     // The page is where `*` is pressed, so it has to show the answer: the star
     // in the lists and the star here are the same mark.
     let mut head = Vec::new();
@@ -1774,7 +1774,7 @@ fn track_line<'a>(
 
 fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(format!(
-        " Queue — {} tracks · shuffle {} · repeat {} ",
+        " Queue: {} tracks · shuffle {} · repeat {} ",
         app.queue.len(),
         if app.queue.is_shuffled() { "on" } else { "off" },
         app.queue.repeat().label()
@@ -1814,7 +1814,8 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default()
         };
-        let line = Line::from(vec![
+        let artist = item.artist.clone().unwrap_or_default();
+        let mut spans = vec![
             Span::styled(
                 marker,
                 if is_selected || is_playing {
@@ -1824,11 +1825,16 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
                 },
             ),
             Span::styled(item.title.clone(), title),
-            Span::styled(
-                format!(" — {}", item.artist.clone().unwrap_or_default()),
+        ];
+        // The artist is a second, quieter fact about the row: two spaces
+        // apart, no punctuation between them.
+        if !artist.is_empty() {
+            spans.push(Span::styled(
+                format!("  {artist}"),
                 Style::default().fg(MUTED),
-            ),
-        ]);
+            ));
+        }
+        let line = Line::from(spans);
         let row = Rect {
             x: inner.x,
             y: inner.y + slot as u16,
@@ -1843,8 +1849,8 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
 /// runs of keys.
 ///
 /// There are no section headings. Every heading the sheet used to carry was
-/// either wrong or redundant — `w` is a layout toggle, not movement; `t` only
-/// exists on the artist page; `x` and `J`/`K` only exist in the queue — and a
+/// either wrong or redundant - `w` is a layout toggle, not movement; `t` only
+/// exists on the artist page; `x` and `J`/`K` only exist in the queue - and a
 /// heading that lies is worse than none. Each meaning now says what it does
 /// and, where a key only works in one view, names that view.
 enum HelpRow {
@@ -1862,8 +1868,8 @@ const HELP_GUTTER: usize = 3;
 
 fn draw_help(frame: &mut Frame, area: Rect) {
     // Two columns of one key per row. A row costs a line and lines are the
-    // scarce resource — the sheet has the body to live in, which is 18 rows on
-    // an 80x24 terminal — so putting two keys on one line buys height at the
+    // scarce resource - the sheet has the body to live in, which is 18 rows on
+    // an 80x24 terminal - so putting two keys on one line buys height at the
     // price of the key somebody opened this to look up.
     let left = [
         HelpRow::Key("Enter", "open · play"),
@@ -2026,7 +2032,7 @@ fn draw_bar_track(frame: &mut Frame, app: &App, area: Rect) {
     let mut title = String::new();
     if !artist.is_empty() {
         title.push_str(&artist);
-        title.push_str(" — ");
+        title.push_str(" · ");
     }
     title.push_str(&track.title);
 
@@ -2216,11 +2222,22 @@ fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     for (index, item) in upcoming.iter().enumerate() {
+        // The title is what you scan for, the artist is what tells two
+        // same-named tracks apart, so both share the row: the artist gets
+        // whatever room the title leaves, and only when there is room to read.
+        let width = usize::from(area.width);
+        let label = truncate_chars(&item.title, width);
+        let mut spans = vec![Span::styled(label.clone(), Style::default())];
+        let artist = item.artist.clone().unwrap_or_default();
+        let left = width.saturating_sub(label.chars().count() + 2);
+        if !artist.is_empty() && left > 3 {
+            spans.push(Span::styled(
+                format!("  {}", truncate_chars(&artist, left)),
+                Style::default().fg(MUTED),
+            ));
+        }
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                truncate_chars(&item.title, usize::from(area.width)),
-                Style::default(),
-            ))),
+            Paragraph::new(Line::from(spans)),
             Rect {
                 y: area.y + 1 + index as u16,
                 height: 1,
@@ -2644,11 +2661,13 @@ mod tests {
             crate::queue::QueueItem {
                 id: "s2".into(),
                 title: "Kid A".into(),
+                artist: Some("Radiohead".into()),
                 ..Default::default()
             },
             crate::queue::QueueItem {
                 id: "s3".into(),
                 title: "The National Anthem".into(),
+                artist: Some("Radiohead".into()),
                 ..Default::default()
             },
         ]);
@@ -2659,7 +2678,7 @@ mod tests {
     fn the_bar_shows_the_track_progress_and_both_timestamps() {
         let app = playing_app();
         let text = rendered_text(&app, 100, 24);
-        assert!(text.contains("Radiohead — Everything"), "{text}");
+        assert!(text.contains("Radiohead · Everything"), "{text}");
         assert!(text.contains("1:13"), "elapsed time: {text}");
         assert!(text.contains("5:24"), "total time: {text}");
         // Album and container: the bar is the only place they live.
@@ -2671,7 +2690,10 @@ mod tests {
         let app = playing_app();
         let text = rendered_text(&app, 100, 24);
         assert!(text.contains("next"), "{text}");
-        assert!(text.contains("The National Anthem"), "{text}");
+        assert!(
+            text.contains("The National Anthem  Radiohead"),
+            "the next pane names the artist too: {text}"
+        );
     }
 
     #[test]
@@ -2690,6 +2712,10 @@ mod tests {
         assert!(
             text.contains("› The National Anthem"),
             "the cursor has a mark of its own: {text}"
+        );
+        assert!(
+            text.contains("Kid A  Radiohead"),
+            "the queue row names the artist without a dash: {text}"
         );
         assert!(
             text.contains("next") && text.contains("The National Anthem"),
@@ -3032,7 +3058,7 @@ mod tests {
         assert!(text.contains("queue: remove"), "{text}");
         assert!(text.contains("queue: move"), "{text}");
         // The headings are gone, so no key is filed under one that lies about
-        // it — `w` is a layout toggle, not movement, and the queue keys are
+        // it - `w` is a layout toggle, not movement, and the queue keys are
         // not library keys.
         assert!(!text.contains("library"), "{text}");
         assert!(!text.contains("save for later"), "{text}");
