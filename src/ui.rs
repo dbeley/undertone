@@ -1675,11 +1675,12 @@ fn draw_wall(
 
         // One line of text under the cover; the tile is too narrow for more.
         // The marks come first, in the same order rows put them: star then clock.
-        // Selection is the accent colour and the weight, not a glyph.
+        // Selection is the bar under the name, the same answer the rows give,
+        // since a border would eat the line the name sits on.
         let label = format!("{}{}", mark_prefix(tile.starred, tile.later), tile.label);
         frame.render_widget(
             Paragraph::new(label).style(if is_selected {
-                selected_style()
+                on_bar(true)
             } else {
                 Style::default().fg(MUTED)
             }),
@@ -3401,6 +3402,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_selected_tile_gets_the_bar_under_its_name() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.albums = vec![album_with_cover("a"), album_with_cover("b")];
+        app.view = View::Albums;
+        app.layout = AlbumLayout::Grid;
+
+        let (width, height) = (100, 30);
+        let buffer = rendered_buffer(&app, width, height);
+        let body = shell_layout(Rect::new(0, 0, width, height)).body;
+        let wall = app.wall(body.width, body.height);
+        let label_y = body.y + wall.cover_offset(0).0 + wall.thumb.rows;
+        let label_x = body.x + wall.offset(0).1;
+
+        assert_eq!(
+            buffer[(label_x, label_y)].bg,
+            ACCENT,
+            "the first tile's name sits on the bar"
+        );
+        assert_ne!(
+            buffer[(label_x, label_y + wall.tile_h)].bg,
+            ACCENT,
+            "the next row of tiles is plain"
+        );
     }
 
     /// Save an album the way `z` does, without a server.

@@ -469,6 +469,13 @@ Four rules keep the screens coherent as the app grew:
   wanting the library as a wall says nothing about wanting artists that way.
   Both walls come from one `draw_wall`, so tile geometry, whole-row scrolling
   and art requests cannot drift between them.
+- **The cursor is a bar, not a border.** A selected album or artist is filled
+  with the accent colour, and its title and subtitle switch to black on that
+  bar. A box would say it more loudly, but a box needs a line of its own above
+  and below: at three lines per row that makes five, and a third of the albums
+  on a 30-row screen disappear to draw it. The bar costs no cell, and the cover
+  sits inside it instead of being fenced off from its own name. The wall's
+  selected tile gets the same bar under its name, for the same reason.
 - **History is a stack in both directions.** `h` goes back to where you came
   from and `l` comes forward again, so going back is reversible; `Left`/`Right`
   do the same. A wall keeps `h`/`l` for moving between covers, and a rail jump
