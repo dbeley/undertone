@@ -146,8 +146,7 @@ fn nav_owner(view: View) -> View {
 
 fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     // The numbered pages start on the rail's first row, so their labels line
-    // up with the first rows of content beside them. Search follows them: an
-    // extra row above would push the whole rail half a row out of step.
+    // up with the first rows of content beside them.
     let current = nav_owner(app.view);
     let mut y = area.y;
     for (view, label, key) in NAV_ITEMS.iter() {
@@ -157,13 +156,13 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         draw_rail_row(frame, area, y, label, *key, *view == current);
         y += 1;
     }
-    // Air, then search: it is not a numbered page, but it is the other way
-    // into the library and `/` alone is easy to forget.
-    if y < area.y + area.height {
-        y += 1;
-    }
-    if y < area.y + area.height {
-        draw_rail_row(frame, area, y, "Search", '/', app.view == View::Search);
+    // Search and help are not pages: they do not list anything, so they sit at
+    // the foot of the rail rather than in the numbered run. Anchored from the
+    // bottom so they keep their place as the list of pages grows.
+    let foot = area.y + area.height.saturating_sub(2);
+    if foot >= y {
+        draw_rail_row(frame, area, foot, "Search", '/', app.view == View::Search);
+        draw_rail_row(frame, area, foot + 1, "Help", '?', app.view == View::Help);
     }
 }
 
@@ -714,10 +713,17 @@ fn draw_view_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_albums(frame: &mut Frame, app: &App, area: Rect) {
-    match app.layout {
-        AlbumLayout::List => draw_albums_list(frame, app, area),
-        AlbumLayout::Grid => draw_albums_grid(frame, app, area),
-    }
+    // One path for both layouts, so a change to rows and tiles cannot land on
+    // one and miss the other.
+    draw_album_listing(
+        frame,
+        app,
+        area,
+        &app.albums,
+        app.selected,
+        app.scroll,
+        app.layout,
+    );
 
     if app.albums.is_empty() {
         frame.render_widget(
@@ -737,18 +743,6 @@ fn draw_thumb_placeholder(frame: &mut Frame, rect: Rect, has_cover: bool) {
     frame.render_widget(
         Paragraph::new(glyph).style(Style::default().fg(MUTED)),
         rect,
-    );
-}
-
-fn draw_albums_list(frame: &mut Frame, app: &App, area: Rect) {
-    draw_album_listing(
-        frame,
-        app,
-        area,
-        &app.albums,
-        app.selected,
-        app.scroll,
-        app.layout,
     );
 }
 
@@ -793,6 +787,7 @@ fn draw_album_listing(
                 .map(|album| Tile {
                     cover: album.cover_art.as_deref(),
                     label: &album.name,
+                    starred: album.starred.is_some(),
                 })
                 .collect();
             draw_wall(frame, app, area, &tiles, selected, scroll);
@@ -966,6 +961,7 @@ fn draw_artists(frame: &mut Frame, app: &App, area: Rect) {
                 .map(|artist| Tile {
                     cover: artist.cover_art.as_deref(),
                     label: &artist.name,
+                    starred: artist.starred.is_some(),
                 })
                 .collect();
             draw_wall(
@@ -1406,6 +1402,8 @@ fn draw_favorites(frame: &mut Frame, app: &App, area: Rect) {
 struct Tile<'a> {
     cover: Option<&'a str>,
     label: &'a str,
+    /// A starred cover wears the same mark as a starred row.
+    starred: bool,
 }
 
 /// A wall of covers. Shared by the album list and the artist list.
@@ -1461,11 +1459,12 @@ fn draw_wall(
         }
 
         // One line of text under the cover; the tile is too narrow for more.
-        let label = if is_selected {
-            format!("\u{25b8}{}", tile.label)
-        } else {
-            format!(" {}", tile.label)
-        };
+        // The star sits after the selection marker so a starred tile can also
+        // be the selected one, and in the same place rows put it: before the
+        // name.
+        let marker = if is_selected { "\u{25b8}" } else { " " };
+        let star = if tile.starred { "\u{2605} " } else { "" };
+        let label = format!("{marker}{star}{}", tile.label);
         frame.render_widget(
             Paragraph::new(label).style(if is_selected {
                 selected_style()
@@ -1480,18 +1479,6 @@ fn draw_wall(
             },
         );
     }
-}
-
-fn draw_albums_grid(frame: &mut Frame, app: &App, area: Rect) {
-    let tiles: Vec<Tile> = app
-        .albums
-        .iter()
-        .map(|album| Tile {
-            cover: album.cover_art.as_deref(),
-            label: &album.name,
-        })
-        .collect();
-    draw_wall(frame, app, area, &tiles, app.selected, app.scroll);
 }
 
 fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
@@ -1852,18 +1839,23 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// One row of the help sheet: a heading, a key and what it does, or air
-/// between two groups.
+/// One row of the help sheet: a key and what it does, or air between two
+/// runs of keys.
+///
+/// There are no section headings. Every heading the sheet used to carry was
+/// either wrong or redundant — `w` is a layout toggle, not movement; `t` only
+/// exists on the artist page; `x` and `J`/`K` only exist in the queue — and a
+/// heading that lies is worse than none. Each meaning now says what it does
+/// and, where a key only works in one view, names that view.
 enum HelpRow {
-    Group(&'static str),
     Key(&'static str, &'static str),
     Blank,
 }
 
-/// The widest key (`Ctrl-d / u`) and the widest meaning (`next / previous`),
-/// so each column is only as wide as its own content.
+/// The widest key (`Ctrl-d / u`) and the widest meaning
+/// (`wall: left / right`), so each column is only as wide as its content.
 const HELP_KEY_W: usize = 10;
-const HELP_DESC_W: usize = 16;
+const HELP_DESC_W: usize = 18;
 const HELP_COL_W: usize = HELP_KEY_W + 2 + HELP_DESC_W;
 /// Air between the two columns.
 const HELP_GUTTER: usize = 3;
@@ -1874,45 +1866,42 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     // an 80x24 terminal — so putting two keys on one line buys height at the
     // price of the key somebody opened this to look up.
     let left = [
-        HelpRow::Group("play"),
         HelpRow::Key("Enter", "open · play"),
         HelpRow::Key("p / Space", "play / pause"),
         HelpRow::Key("> / <", "next / previous"),
-        HelpRow::Key("f / b", "seek 10s"),
+        HelpRow::Key("f / b", "seek ∓10s"),
         HelpRow::Key("s", "shuffle"),
         HelpRow::Key("r", "repeat"),
         HelpRow::Key("+ / -", "volume"),
         HelpRow::Key("m", "mute"),
         HelpRow::Blank,
-        HelpRow::Group("go"),
-        HelpRow::Key("1–6", "rail"),
+        HelpRow::Key("1–6", "rail: albums…queue"),
         HelpRow::Key("/", "search"),
-        HelpRow::Key("o / i", "album / artist"),
-        HelpRow::Key("Esc", "back"),
+        HelpRow::Key("Esc / h", "back"),
+        HelpRow::Key("l", "forward"),
+        HelpRow::Key("?", "this help"),
         HelpRow::Key("q", "quit"),
     ];
-    // The rail carries the playlist, listen-later and favourite keys as its own
-    // numbers, and the bar under every view names what that view adds, so this
-    // sheet only lists what neither of them can show.
+    // The left column is what a track does; the right is what the lists and
+    // the queue do. The blank keeps the two runs apart without labelling them,
+    // so nothing has to be filed under a heading it does not belong to.
     let right = [
-        HelpRow::Group("move"),
         HelpRow::Key("j / k", "down / up"),
+        HelpRow::Key("h / l", "wall: left / right"),
         HelpRow::Key("Ctrl-d / u", "half page"),
         HelpRow::Key("g / G", "first / last"),
-        HelpRow::Key("h / l", "back / forward"),
         HelpRow::Key("w", "list / wall"),
-        HelpRow::Key("Tab", "pane"),
-        HelpRow::Key("t", "albums / songs"),
-        // Move is one key shorter than play, so the second pair of headings
-        // only line up if this side gets the extra line.
-        HelpRow::Blank,
-        HelpRow::Blank,
-        HelpRow::Group("library"),
         HelpRow::Key("*", "star / unstar"),
-        HelpRow::Key("a / A", "queue next / end"),
-        HelpRow::Key("z", "save for later"),
+        HelpRow::Key("a / A", "queue: next / end"),
         HelpRow::Key("S / R", "sort / reload"),
-        HelpRow::Key("x, J/K", "delete, move"),
+        HelpRow::Blank,
+        // Listen later: how an album gets there and where the list lives.
+        HelpRow::Key("z", "keep for later"),
+        HelpRow::Key("4", "listen later page"),
+        HelpRow::Key("x", "queue: remove"),
+        HelpRow::Key("J / K", "queue: move"),
+        HelpRow::Key("Tab", "artist: next pane"),
+        HelpRow::Key("t", "artist: song list"),
     ];
 
     let rows = left.len().max(right.len());
@@ -1925,7 +1914,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         })
         .collect();
 
-    let width = ((HELP_COL_W * 2 + HELP_GUTTER + 2) as u16).min(area.width);
+    // One spare column inside the border: the widest meaning reaches the
+    // right-hand rule otherwise, which reads as clipped text.
+    let width = ((HELP_COL_W * 2 + HELP_GUTTER + 3) as u16).min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
@@ -1961,11 +1952,7 @@ fn help_cell(row: Option<&HelpRow>) -> Vec<Span<'static>> {
                 Style::default().fg(MUTED),
             ),
         ],
-        Some(HelpRow::Group(name)) => vec![Span::styled(
-            format!("{name:<width$}", width = HELP_COL_W),
-            Style::default().fg(MUTED),
-        )],
-        // No row on this side, or air between groups: keep the gutter straight.
+        // No row on this side, or air between runs: keep the gutter straight.
         None | Some(HelpRow::Blank) => vec![Span::raw(" ".repeat(HELP_COL_W))],
     }
 }
@@ -2917,8 +2904,42 @@ mod tests {
             "search has a home on the rail: {text}"
         );
         assert!(
+            text.contains("Help     ?"),
+            "help has a home on the rail: {text}"
+        );
+        assert!(
             text.contains('│'),
             "a rule separates the rail from the view"
+        );
+    }
+
+    #[test]
+    fn the_rail_keeps_search_and_help_at_the_foot() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.view = View::Albums;
+        let text = rendered_text(&app, 96, 24);
+        let lines: Vec<&str> = text.lines().collect();
+        let row = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is on the rail: {text}"))
+        };
+        // The rail ends where the bar starts, and these two rows end it: below
+        // the numbered pages, with nothing after them.
+        let last = lines.len() - usize::from(BAR_HEIGHT) - 1;
+        assert_eq!(row("Search   /"), last - 1, "{text}");
+        assert_eq!(row("Help     ?"), last, "{text}");
+        assert!(
+            row("Search   /") > row("Queue    6"),
+            "search is not one of the pages: {text}"
+        );
+
+        // Help is a page of the rail only in the sense that it can be marked.
+        app.view = View::Help;
+        assert!(
+            rendered_text(&app, 96, 24).contains("▸ Help"),
+            "the help sheet marks its own entry"
         );
     }
 
@@ -2999,17 +3020,22 @@ mod tests {
             "play / pause",
             "next / previous",
             "half page",
-            "albums / songs",
             "star / unstar",
-            "save for later",
             "first / last",
         ] {
             assert!(text.contains(meaning), "{meaning} is documented: {text}");
         }
-        // The two lines that held four keys are gone: the rail is the legend for
-        // artists, later and favourites, and the bar names what each view adds.
-        assert!(!text.contains("listen later"), "{text}");
-        assert!(!text.contains("favourites"), "{text}");
+        // Listen later is a page and a key of its own, so both are named: `4`
+        // opens the list and `z` is how an album gets into it.
+        assert!(text.contains("keep for later"), "{text}");
+        assert!(text.contains("listen later page"), "{text}");
+        assert!(text.contains("queue: remove"), "{text}");
+        assert!(text.contains("queue: move"), "{text}");
+        // The headings are gone, so no key is filed under one that lies about
+        // it — `w` is a layout toggle, not movement, and the queue keys are
+        // not library keys.
+        assert!(!text.contains("library"), "{text}");
+        assert!(!text.contains("save for later"), "{text}");
     }
 
     #[test]
@@ -3077,6 +3103,26 @@ mod tests {
         app.detail = app.albums.first().cloned();
         app.view = View::AlbumDetail;
         assert!(rendered_text(&app, 80, 24).contains("★ album a"));
+    }
+
+    #[test]
+    fn a_starred_album_is_marked_on_the_wall_too() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let mut starred = album_with_cover("a");
+        starred.starred = Some("2020-01-01".into());
+        app.albums = vec![starred, album_with_cover("b")];
+        app.view = View::Albums;
+        app.layout = AlbumLayout::Grid;
+
+        let text = rendered_text(&app, 80, 24);
+        assert!(
+            text.contains("▸★ album a"),
+            "the star follows the selection marker: {text}"
+        );
+        assert!(
+            !text.contains("★ album b"),
+            "an unstarred tile carries no mark: {text}"
+        );
     }
 
     #[test]

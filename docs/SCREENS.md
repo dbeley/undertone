@@ -22,7 +22,7 @@ Album list, with the rail, the list's own header and the three-column bar.
   Lists    5│ ▚ ▚ ▚  Fixture Two
   Queue    6│        Other Band · 2001
             │        3 tracks
-  Search   /│ ▚ ▚ ▚  Third
+            │ ▚ ▚ ▚  Third
             │        Nobody · 2002
             │        3 tracks
             │
@@ -38,8 +38,8 @@ Album list, with the rail, the list's own header and the three-column bar.
             │
             │
             │
-            │
-            │
+  Search   /│
+  Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │fixture 1.16.1                  │next
 Enter on an album to start         │S sort · w layout · a next · A  │end of queue
@@ -59,24 +59,24 @@ Enter on an album to start         │S sort · w layout · a next · A  │end 
   Lists    5│
   Queue    6│
             │ ▸Fixture One    Fixture Two    Third
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
   Search   /│
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
+  Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │albums: wall                    │next
 Enter on an album to start         │S sort · w layout · a next · A  │end of queue
@@ -96,7 +96,7 @@ The album's cover and its tracks; the bar keeps playing state.
   Lists    5│
   Queue    6│
             │
-  Search   /│
+            │
             │
             │
             │   1. Track 1  3:20
@@ -112,8 +112,8 @@ The album's cover and its tracks; the bar keeps playing state.
             │
             │
             │
-            │
-            │
+  Search   /│
+  Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │albums: list                    │next
 Enter on an album to start         │Enter play · a next · A end · i │end of queue
@@ -133,24 +133,24 @@ One flat result list: albums first, then songs, each row labelled.
   Lists    5│ song   Track 1  Test Artist
   Queue    6│ song   Track 2  Test Artist
             │ song   Track 3  Test Artist
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
 ▸ Search   /│
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
+  Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │6 results for “fixture”         │next
 Enter on an album to start         │/ edit · Enter open · a next · A│end of queue
@@ -170,24 +170,24 @@ The server's playlists, with their size.
 ▸ Lists    5│
   Queue    6│
             │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
   Search   /│
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
+  Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │6 results for “fixture”         │next
 Enter on an album to start         │Enter open · h back             │end of queue
@@ -207,24 +207,24 @@ Artists as a list; `w` turns this into a wall of covers.
   Lists    5│
   Queue    6│
             │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
   Search   /│
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
+  Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │S sort · w layout · Enter open ·│next
 Enter on an album to start         │h back                          │end of queue
@@ -244,7 +244,7 @@ Three panes: albums, similar artists, biography. Tab moves between them.
   Lists    5│        3 tracks                               │
   Queue    6│ ▚ ▚ ▚  Fixture Two                            │
             │        Other Band · 2001                      │
-  Search   /│        3 tracks                               │
+            │        3 tracks                               │
             │ ▚ ▚ ▚  Third                                  │
             │        Nobody · 2002                          │
             │        3 tracks                               │
@@ -260,8 +260,8 @@ Three panes: albums, similar artists, biography. Tab moves between them.
             │                                               │
             │                                               │
             │                                               │
-            │                                               │
-            │                                               │
+  Search   /│                                               │
+  Help     ?│                                               │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │Tab pane · t songs · a next · A │next
 Enter on an album to start         │end · h back                    │end of queue
@@ -281,7 +281,7 @@ The left pane has two tabs: albums and the artist's most played tracks.
   Lists    5│   3. Top Track 3  Fixture One  3:02           │
   Queue    6│   4. Top Track 4  Fixture One  3:03           │
             │                                               │
-  Search   /│                                               │
+            │                                               │
             │                                               │
             │                                               │
             │                                               │
@@ -297,8 +297,8 @@ The left pane has two tabs: albums and the artist's most played tracks.
             │                                               │
             │                                               │
             │                                               │
-            │                                               │
-            │                                               │
+  Search   /│                                               │
+  Help     ?│                                               │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │artist: top songs               │next
 Enter on an album to start         │Tab pane · t songs · a next · A │end of queue
@@ -318,24 +318,24 @@ What plays next; Enter starts from the cursor.
   Lists    5│ │                                                                                        │
 ▸ Queue    6│ │                                                                                        │
             │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
+            │ │                                                                                        │
   Search   /│ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ │                                                                                        │
-            │ └────────────────────────────────────────────────────────────────────────────────────────┘
+  Help     ?│ └────────────────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │artist: top songs               │next
 Enter on an album to start         │Enter play · x delete · J/K move│end of queue
