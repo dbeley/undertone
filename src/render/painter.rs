@@ -9,6 +9,15 @@
 //! against what should be, and emits nothing when nothing changed. The caller
 //! is responsible for ordering: erases before the text diff, paints after it,
 //! so an erase cannot wipe text the diff just wrote.
+//!
+//! That snapshot is not complete on its own. An image sits in the same grid as
+//! the characters, so the text diff writes over one every time a cell under it
+//! changes - a selection bar moving onto a row is enough - and no placement
+//! moved, so the diff above sees nothing. `repaint_damaged` closes that hole:
+//! it compares the cells under each image with the ones it left there, and asks
+//! for the images the frame wrote over.
+
+use ratatui::buffer::{Buffer, Cell};
 
 use super::protocol::ArtProtocol;
 
@@ -100,6 +109,10 @@ impl FramePlan {
 pub struct Painter {
     protocol: ArtProtocol,
     painted: Vec<Placement>,
+    /// The cells each painted image covers, as the last frame left them, in
+    /// the same order as `painted`. `None` means the image went up this frame
+    /// and no frame has been written over it yet.
+    under: Vec<Option<Vec<Cell>>>,
 }
 
 impl Painter {
@@ -107,6 +120,7 @@ impl Painter {
         Self {
             protocol,
             painted: Vec::new(),
+            under: Vec::new(),
         }
     }
 
@@ -118,6 +132,7 @@ impl Painter {
     /// screen, and after any external write to the terminal.
     pub fn invalidate(&mut self) {
         self.painted.clear();
+        self.under.clear();
     }
 
     /// Diff the desired placements against what is on screen.
@@ -128,10 +143,25 @@ impl Painter {
         // ratatui.
         if !self.protocol.is_pixel() {
             self.painted.clear();
+            self.under.clear();
             return FramePlan::default();
         }
 
         let mut plan = FramePlan::default();
+
+        // The common frame: every image is where it was, showing what it was.
+        // Nothing to erase, nothing to paint, and the cells under them are
+        // still the ones recorded. Placements never overlap - the layouts are
+        // tested for it - so an image cannot be hiding another one here.
+        if self.painted.len() == desired.len()
+            && self
+                .painted
+                .iter()
+                .zip(desired)
+                .all(|(old, new)| old.key == new.key && old.same_rect(new))
+        {
+            return plan;
+        }
 
         // Erase anything gone, moved, resized, or overlapped by a different
         // image: a partial overpaint would leave sixel artifacts behind.
@@ -147,30 +177,210 @@ impl Painter {
             }
         }
 
-        // Paint anything new or changed.
+        // Paint anything new or changed, and carry the cell snapshot of the
+        // images that stay put: those are the only ones the frame in between
+        // has not been drawn over yet. Moved, not cloned - a still frame
+        // allocates nothing for the cells.
+        let mut carried = std::mem::take(&mut self.under);
+        let mut under = Vec::with_capacity(desired.len());
         for new in desired {
             let unchanged = self
                 .painted
                 .iter()
-                .any(|old| old.key == new.key && old.same_rect(new));
-            if !unchanged {
-                plan.paints.push(PaintOp::Paint {
-                    placement: new.clone(),
-                });
+                .position(|old| old.key == new.key && old.same_rect(new));
+            match unchanged {
+                Some(index) => under.push(carried.get_mut(index).and_then(Option::take)),
+                None => {
+                    plan.paints.push(PaintOp::Paint {
+                        placement: new.clone(),
+                    });
+                    under.push(None);
+                }
             }
         }
 
+        self.under = under;
         self.painted = desired.to_vec();
         plan
+    }
+
+    /// Repaint any image the text frame just wrote over.
+    ///
+    /// Call this after the frame is drawn, with the buffer that was drawn, and
+    /// paint what comes back. An image that went up this frame is left alone:
+    /// it was painted after the text, so it is the top layer.
+    ///
+    /// kitty images are objects above the grid, so text written under one is
+    /// hidden by it rather than destructive, and those frames stay free.
+    pub fn repaint_damaged(&mut self, buffer: &Buffer) -> FramePlan {
+        // Only sixel needs this: a kitty image is an object above the grid, so
+        // text written under one is hidden by it rather than destructive.
+        if self.protocol != ArtProtocol::Sixel {
+            return FramePlan::default();
+        }
+
+        let mut plan = FramePlan::default();
+        for (placement, under) in self.painted.iter().zip(self.under.iter_mut()) {
+            let damaged = under
+                .as_deref()
+                .is_some_and(|before| written_over(buffer, placement, before));
+            if damaged {
+                plan.paints.push(PaintOp::Paint {
+                    placement: placement.clone(),
+                });
+            }
+            // Only a damaged image needs a fresh snapshot: the others are
+            // still showing the cells they recorded.
+            if under.is_none() || damaged {
+                let mut cells = under.take().unwrap_or_default();
+                snapshot_under(buffer, placement, &mut cells);
+                *under = Some(cells);
+            }
+        }
+        plan
+    }
+}
+
+/// True when the frame wrote on any cell the image covers.
+fn written_over(buffer: &Buffer, placement: &Placement, before: &[Cell]) -> bool {
+    let area = buffer.area;
+    // What a cell off the screen compares against, now and before.
+    let outside = Cell::default();
+    let mut index = 0;
+    for row in placement.row..placement.row.saturating_add(placement.rows) {
+        for col in placement.col..placement.col.saturating_add(placement.cols) {
+            let on_screen =
+                row >= area.y && row < area.bottom() && col >= area.x && col < area.right();
+            let now = if on_screen {
+                &buffer[(col, row)]
+            } else {
+                &outside
+            };
+            if before.get(index) != Some(now) {
+                return true;
+            }
+            index += 1;
+        }
+    }
+    false
+}
+
+/// Record the cells an image covers, as the frame just left them.
+///
+/// Fills the vector it is given so a frame that keeps repainting the same cover
+/// does not allocate one per frame.
+fn snapshot_under(buffer: &Buffer, placement: &Placement, cells: &mut Vec<Cell>) {
+    let area = buffer.area;
+    cells.clear();
+    for row in placement.row..placement.row.saturating_add(placement.rows) {
+        for col in placement.col..placement.col.saturating_add(placement.cols) {
+            let on_screen =
+                row >= area.y && row < area.bottom() && col >= area.x && col < area.right();
+            if on_screen {
+                cells.push(buffer[(col, row)].clone());
+            } else {
+                // Off the screen: no frame draws there, now or before.
+                cells.push(Cell::default());
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Color, Style};
 
     fn place(key: &str, row: u16, col: u16) -> Placement {
         Placement::new(key, row, col, 2, 4)
+    }
+
+    fn screen() -> Buffer {
+        Buffer::empty(Rect::new(0, 0, 12, 8))
+    }
+
+    /// Fill a rectangle the way a selection bar does: same symbols, different
+    /// background. The text diff writes every one of those cells.
+    fn paint_bar(buffer: &mut Buffer, row: u16) {
+        buffer.set_style(
+            Rect::new(0, row, 12, 2),
+            Style::default().bg(Color::Magenta),
+        );
+    }
+
+    #[test]
+    fn a_bar_written_over_a_cover_repaints_it() {
+        let mut painter = Painter::new(ArtProtocol::Sixel);
+        let cover = place("a", 0, 0);
+        painter.plan(std::slice::from_ref(&cover));
+
+        let mut buffer = screen();
+        let first = painter.repaint_damaged(&buffer);
+        assert!(first.is_empty(), "nothing has landed on the image yet");
+
+        paint_bar(&mut buffer, 0);
+        let plan = painter.repaint_damaged(&buffer);
+        assert_eq!(plan.paints.len(), 1, "the bar wrote over the cover");
+        assert!(plan.erases.is_empty(), "the image did not move");
+    }
+
+    #[test]
+    fn an_undamaged_frame_repaints_nothing() {
+        let mut painter = Painter::new(ArtProtocol::Sixel);
+        painter.plan(&[place("a", 0, 0)]);
+        let buffer = screen();
+        painter.repaint_damaged(&buffer);
+        assert!(
+            painter.repaint_damaged(&buffer).is_empty(),
+            "a still screen must cost zero bytes"
+        );
+    }
+
+    #[test]
+    fn text_written_beside_a_cover_leaves_it_alone() {
+        let mut painter = Painter::new(ArtProtocol::Sixel);
+        painter.plan(&[place("a", 0, 0)]);
+        let mut buffer = screen();
+        painter.repaint_damaged(&buffer);
+
+        buffer.set_style(Rect::new(6, 0, 6, 2), Style::default().fg(Color::Red));
+        assert!(painter.repaint_damaged(&buffer).is_empty());
+    }
+
+    #[test]
+    fn a_cover_painted_this_frame_is_not_repainted() {
+        let mut painter = Painter::new(ArtProtocol::Sixel);
+        // The image goes up after the text is drawn, so the cells under it are
+        // irrelevant to what the user sees.
+        painter.plan(&[place("a", 0, 0)]);
+        assert!(painter.repaint_damaged(&screen()).is_empty());
+    }
+
+    #[test]
+    fn kitty_images_survive_text_written_under_them() {
+        let mut painter = Painter::new(ArtProtocol::Kitty);
+        painter.plan(&[place("a", 0, 0)]);
+        let mut buffer = screen();
+        painter.repaint_damaged(&buffer);
+        paint_bar(&mut buffer, 0);
+        // kitty images are objects above the grid: the bar goes behind them.
+        assert!(painter.repaint_damaged(&buffer).is_empty());
+    }
+
+    #[test]
+    fn a_cover_that_leaves_the_screen_stops_being_watched() {
+        let mut painter = Painter::new(ArtProtocol::Sixel);
+        painter.plan(&[place("a", 0, 0)]);
+        let mut buffer = screen();
+        painter.repaint_damaged(&buffer);
+        painter.plan(&[]);
+
+        // The snapshot must go with the placement, or the next image in that
+        // rectangle would be compared against a stranger's cells.
+        paint_bar(&mut buffer, 0);
+        painter.plan(&[place("b", 4, 0)]);
+        assert!(painter.repaint_damaged(&buffer).is_empty());
     }
 
     #[test]

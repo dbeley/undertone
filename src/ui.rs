@@ -2668,6 +2668,18 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
+    /// Draw one frame the way `main` does - placements, plan, text, then what
+    /// the text wrote over - and return the repaint the painter asks for.
+    fn frame_damage(app: &mut App, width: u16, height: u16) -> crate::render::FramePlan {
+        use ratatui::backend::TestBackend;
+        let mut terminal =
+            ratatui::Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        collect_placements(app, Rect::new(0, 0, width, height));
+        app.painter.plan(&app.placements);
+        let frame = terminal.draw(|frame| draw(frame, app)).expect("draw");
+        app.painter.repaint_damaged(frame.buffer)
+    }
+
     /// Render one frame into an offscreen buffer and return its text.
     ///
     /// Placements are exercised elsewhere; this is for what the user reads.
@@ -2864,6 +2876,52 @@ mod tests {
         app.artist_left = ArtistLeft::Songs;
         collect_placements(&mut app, area);
         assert!(app.placements.is_empty(), "no album art over the songs");
+    }
+
+    #[test]
+    fn the_bar_walking_down_the_album_list_repaints_the_covers_it_crosses() {
+        let mut app = test_app(ArtProtocol::Sixel);
+        app.view = View::ArtistDetail;
+        app.artist_detail = Some(crate::subsonic::ArtistDetail {
+            id: "ar-1".into(),
+            name: "Artist".into(),
+            album: vec![
+                album_with_cover("a"),
+                album_with_cover("b"),
+                album_with_cover("c"),
+            ],
+            ..Default::default()
+        });
+        let thumb = app.list_thumb();
+        {
+            let albums = &app.artist_detail.as_ref().unwrap().album;
+            for album in albums {
+                let key = ArtService::key(
+                    album.cover_art.as_deref().unwrap(),
+                    thumb.art_cols,
+                    thumb.art_rows,
+                    app.settings.palette,
+                    ArtProtocol::Sixel,
+                );
+                app.art.force_blob(&key, b"\x1bPfake".to_vec());
+            }
+        }
+
+        let still = frame_damage(&mut app, 100, 30);
+        assert!(still.is_empty(), "a still screen repaints nothing");
+
+        // The bar fills the whole row, the cover's cells included, so the text
+        // diff writes those cells again - and on sixel that write takes the
+        // pixels with it. Nothing moved, so only this repaint brings the two
+        // covers back.
+        app.artist_album_selected = 1;
+        let damage = frame_damage(&mut app, 100, 30);
+        assert_eq!(
+            damage.paints.len(),
+            2,
+            "the row the bar left and the row it reached both lost their cover"
+        );
+        assert!(damage.erases.is_empty(), "no cover moved");
     }
 
     #[test]

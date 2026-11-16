@@ -385,8 +385,17 @@ fn event_loop(
             app.settings.backdrop,
             app.cell,
         )?;
-        terminal.draw(|frame| ui::draw(frame, app))?;
+        // The frame is diffed against the last one, so a cell whose style
+        // changed is written again - and on sixel that write lands on top of
+        // the image sharing that cell. Ask what it wrote over before dropping
+        // the buffer: a bar walking down a list is invisible to the placement
+        // diff, which is the only thing that would otherwise repaint the cover.
+        let damage = {
+            let frame = terminal.draw(|frame| ui::draw(frame, app))?;
+            app.painter.repaint_damaged(frame.buffer)
+        };
         ui::emit_paints(terminal, &plan, &app.art)?;
+        ui::emit_paints(terminal, &damage, &app.art)?;
     }
 
     Ok(())

@@ -215,6 +215,7 @@ album id ──► coverArt?size=N ──► 20 MB disk image cache
 - Each frame the view layer yields `Vec<Placement { key, rect_cells, blob_key }>`.
 - The painter compares against `HashMap<PlacementKey, Rect>` of what is actually on screen.
 - Bytes emitted, in this order: **erase** for moved/gone → `terminal.draw()` (text diff) → **paint** for new/changed. The split order matters: an erase must not wipe text the diff just wrote.
+- **Text writes over images.** A cell whose style changed is written again, and on sixel that write takes the pixels under it - a selection bar sliding onto a row is enough, and the placement itself never moved, so the diff above cannot see it. The painter records the cells under each image after the frame, compares them on the next one, and repaints the images the frame wrote over. Only sixel needs it: kitty images are objects above the grid.
 - Zero bytes when nothing changed - the default case while music plays.
 - On resize or alt-screen entry, drop all tracked placements and repaint.
 
