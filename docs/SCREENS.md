@@ -7,7 +7,10 @@ interface draws. Regenerate with
 
 Covers are shown as their placeholder slot: the fixture server serves no
 cover art, so these frames are identical on every machine and CI can
-diff them. What the art itself looks like in each protocol is in
+diff them. The app is started as a plain `xterm-256color`, which pins the
+art protocol too: a pixel terminal gives a cover a slightly different
+number of cells, and these frames are about layout, not about pixels.
+What the art itself looks like in each protocol is in
 `docs/COMPATIBILITY.md`, and is asserted there rather than drawn here.
 
 ## The library
@@ -53,7 +56,7 @@ Enter on an album to start         │S sort · w layout · a next · A  │end 
 
 ```
 ▸ Albums   1│ Albums · random                                                                      1 / 3
-  Artists  2│  ▚ ▚ ▚ ▚ ▚      ▚ ▚ ▚ ▚ ▚      ▚ ▚ ▚ ▚ ▚
+  Artists  2│   ▚ ▚ ▚ ▚ ▚      ▚ ▚ ▚ ▚ ▚      ▚ ▚ ▚ ▚ ▚
   Starred  3│
   Later    4│
   Lists    5│
@@ -90,9 +93,9 @@ The album's cover and its tracks; the bar keeps playing state.
 
 ```
 ▸ Albums   1│ Album                                                                          Fixture One
-  Artists  2│                      Fixture One
-  Starred  3│                      Test Artist
-  Later    4│                      2000 · 3 tracks
+  Artists  2│                    Fixture One
+  Starred  3│                    Test Artist
+  Later    4│                    2000 · 3 tracks
   Lists    5│
   Queue    6│
             │

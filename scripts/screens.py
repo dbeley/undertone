@@ -20,7 +20,7 @@ import termios
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from degradation import Screen, start_fixture  # noqa: E402
+from degradation import SYMBOLS_TERM, Screen, start_fixture  # noqa: E402
 
 COLS, ROWS = 104, 30
 
@@ -28,8 +28,18 @@ COLS, ROWS = 104, 30
 class App:
     def __init__(self, binary, args, state_dir=None):
         env = dict(os.environ)
-        env.setdefault("TERM", "xterm-256color")
         env.setdefault("UNDERTONE_PASSWORD", "fixture")
+        # The terminal decides the art protocol, and the protocol decides how
+        # many cells a cover slot takes, so the frames differ between foot,
+        # ghostty and a plain xterm - in ways that have nothing to do with what
+        # this document is for. Present as a symbols terminal everywhere: it is
+        # the floor the app falls back to, and it is what draws the placeholder
+        # the frames show.
+        for key, value in SYMBOLS_TERM.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         # A throwaway state directory: otherwise a session saved by a real run
         # is restored, and the frames depend on where you last were. The config
         # directory comes along, because the bar names the file it loaded and
@@ -153,7 +163,10 @@ def main():
         "",
         "Covers are shown as their placeholder slot: the fixture server serves no",
         "cover art, so these frames are identical on every machine and CI can",
-        "diff them. What the art itself looks like in each protocol is in",
+        "diff them. The app is started as a plain `xterm-256color`, which pins the",
+        "art protocol too: a pixel terminal gives a cover a slightly different",
+        "number of cells, and these frames are about layout, not about pixels.",
+        "What the art itself looks like in each protocol is in",
         "`docs/COMPATIBILITY.md`, and is asserted there rather than drawn here.",
         "",
     ]
