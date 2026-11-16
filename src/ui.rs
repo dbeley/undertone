@@ -33,10 +33,6 @@ fn title_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
 
-fn selected_style() -> Style {
-    Style::default().add_modifier(Modifier::BOLD).fg(ACCENT)
-}
-
 /// The bar behind the selected row, or under the selected tile's name.
 ///
 /// A box was the obvious way to make a chosen row louder, but a border needs a
@@ -57,6 +53,38 @@ fn on_bar(bold: bool) -> Style {
         style.add_modifier(Modifier::BOLD)
     } else {
         style
+    }
+}
+
+/// Fill one row with the cursor bar.
+///
+/// The bar is the whole row everywhere - three lines of album beside its cover,
+/// or one line of track text - because the cursor is one thing on every screen.
+/// A bar that stopped before a row's own numbers and durations would read as a
+/// tint on the title rather than as the row you are on.
+fn paint_bar(frame: &mut Frame, row: Rect) {
+    frame.render_widget(Paragraph::new("").style(bar_style()), row);
+}
+
+/// The title on the cursor row: bold black on the bar, plain off it.
+fn cursor_title(selected: bool) -> Style {
+    if selected {
+        on_bar(true)
+    } else {
+        Style::default()
+    }
+}
+
+/// The supporting text on a row: a track number, an artist, a track count.
+///
+/// Off the bar it is muted; on it, black without the bold - the bar already
+/// says where the cursor is, and bold on every column would leave the title
+/// with nothing to stand out against.
+fn cursor_quiet(selected: bool) -> Style {
+    if selected {
+        on_bar(false)
+    } else {
+        Style::default().fg(MUTED)
     }
 }
 
@@ -998,7 +1026,7 @@ fn draw_row(
     // The bar goes down first, so the cover and the placeholder are painted on
     // top of it rather than punching a gap in it.
     if selected {
-        frame.render_widget(Paragraph::new("").style(bar_style()), row);
+        paint_bar(frame, row);
     }
     draw_row_thumb(frame, app, row, cover, selected);
 
@@ -1024,21 +1052,10 @@ fn draw_row(
     let mut head = Vec::new();
     let marks = mark_prefix(starred, later);
     if !marks.is_empty() {
-        head.push(Span::styled(
-            marks,
-            if selected {
-                on_bar(false)
-            } else {
-                Style::default().fg(MUTED)
-            },
-        ));
+        head.push(Span::styled(marks, cursor_quiet(selected)));
     }
     head.push(Span::styled(title.to_string(), weight));
-    let quiet = if selected {
-        on_bar(false)
-    } else {
-        Style::default().fg(MUTED)
-    };
+    let quiet = cursor_quiet(selected);
     let mut lines = vec![
         Line::from(head),
         Line::from(Span::styled(subtitle.to_string(), quiet)),
@@ -1084,11 +1101,7 @@ fn draw_row_thumb(
     } else {
         // The placeholder keeps the bar's background, or the selected row would
         // have a hole in it exactly where the cover will land.
-        let quiet = if on_selection {
-            on_bar(false)
-        } else {
-            Style::default().fg(MUTED)
-        };
+        let quiet = cursor_quiet(on_selection);
         draw_thumb_placeholder(frame, slot, cover.is_some(), quiet);
     }
 }
@@ -1311,14 +1324,18 @@ fn draw_artist_songs(frame: &mut Frame, app: &App, area: Rect) {
             && app.artist_pane == ArtistPane::Albums
             && app.artist_left == ArtistLeft::Songs;
         let artist = song.album.clone().unwrap_or_default();
+        let row = Rect {
+            x: area.x,
+            y: area.y + slot as u16,
+            width: area.width,
+            height: 1,
+        };
+        if selected {
+            paint_bar(frame, row);
+        }
         frame.render_widget(
             Paragraph::new(track_line(index + 1, song, &artist, selected, area.width)),
-            Rect {
-                x: area.x,
-                y: area.y + slot as u16,
-                width: area.width,
-                height: 1,
-            },
+            row,
         );
     }
 }
@@ -1351,21 +1368,21 @@ fn draw_similar_pane(frame: &mut Frame, app: &App, area: Rect) {
         };
         let selected =
             index == app.artist_similar_selected && app.artist_pane == ArtistPane::Similar;
+        let row = Rect {
+            x: area.x,
+            y: area.y + slot as u16,
+            width: area.width,
+            height: 1,
+        };
+        if selected {
+            paint_bar(frame, row);
+        }
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 truncate_chars(&artist.name, usize::from(area.width)),
-                if selected {
-                    selected_style()
-                } else {
-                    Style::default()
-                },
+                cursor_title(selected),
             ))),
-            Rect {
-                x: area.x,
-                y: area.y + slot as u16,
-                width: area.width,
-                height: 1,
-            },
+            row,
         );
     }
 }
@@ -1755,35 +1772,26 @@ fn draw_album_detail(frame: &mut Frame, app: &App, area: Rect) {
     let offset = app
         .detail_scroll
         .min(album.song.len().saturating_sub(rows.max(1)));
+    let artist = album.artist.clone().unwrap_or_default();
     for slot in 0..rows {
         let index = offset + slot;
         let Some(song) = album.song.get(index) else {
             break;
         };
         let selected = index == app.detail_selected;
-        let duration = song
-            .duration
-            .map(format_duration)
-            .unwrap_or_else(|| "--:--".to_string());
-        let line = Line::from(vec![
-            Span::styled(format!("{:>3}. ", index + 1), Style::default().fg(MUTED)),
-            Span::styled(
-                song.title.clone(),
-                if selected {
-                    selected_style()
-                } else {
-                    Style::default()
-                },
-            ),
-            Span::styled(format!("  {duration}"), Style::default().fg(MUTED)),
-        ]);
         let row = Rect {
             x: body.x,
             y: body.y + slot as u16,
             width: body.width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(line), row);
+        if selected {
+            paint_bar(frame, row);
+        }
+        frame.render_widget(
+            Paragraph::new(track_line(index + 1, song, &artist, selected, body.width)),
+            row,
+        );
     }
 }
 
@@ -1838,30 +1846,30 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         let tail_width = usize::from(area.width)
             .saturating_sub(usize::from(area.width) / 2 + 9)
             .max(8);
+        let row = Rect {
+            x: area.x,
+            y: area.y + slot as u16,
+            width: area.width,
+            height: 1,
+        };
+        if selected {
+            paint_bar(frame, row);
+        }
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 // Seven, not six: "artist" fills six cells, and a width of six
                 // left no air before the name it was labelling.
-                Span::styled(format!("{kind:<7}"), Style::default().fg(MUTED)),
+                Span::styled(format!("{kind:<7}"), cursor_quiet(selected)),
                 Span::styled(
                     truncate_chars(&name, usize::from(area.width).saturating_sub(20).max(8)),
-                    if selected {
-                        selected_style()
-                    } else {
-                        Style::default()
-                    },
+                    cursor_title(selected),
                 ),
                 Span::styled(
                     format!("  {}", truncate_chars(&detail, tail_width)),
-                    Style::default().fg(MUTED),
+                    cursor_quiet(selected),
                 ),
             ])),
-            Rect {
-                x: area.x,
-                y: area.y + slot as u16,
-                width: area.width,
-                height: 1,
-            },
+            row,
         );
     }
 }
@@ -1896,26 +1904,23 @@ fn draw_playlists(frame: &mut Frame, app: &App, area: Rect) {
         let name_width = usize::from(area.width)
             .saturating_sub(count.chars().count() + 4)
             .max(8);
+        let row = Rect {
+            x: area.x,
+            y: area.y + slot as u16,
+            width: area.width,
+            height: 1,
+        };
+        if selected {
+            paint_bar(frame, row);
+        }
         let line = Line::from(vec![
             Span::styled(
                 truncate_chars(&playlist.name, name_width),
-                if selected {
-                    selected_style()
-                } else {
-                    Style::default()
-                },
+                cursor_title(selected),
             ),
-            Span::styled(format!("  {count}"), Style::default().fg(MUTED)),
+            Span::styled(format!("  {count}"), cursor_quiet(selected)),
         ]);
-        frame.render_widget(
-            Paragraph::new(line),
-            Rect {
-                x: area.x,
-                y: area.y + slot as u16,
-                width: area.width,
-                height: 1,
-            },
-        );
+        frame.render_widget(Paragraph::new(line), row);
     }
 }
 
@@ -1947,19 +1952,26 @@ fn draw_playlist_detail(frame: &mut Frame, app: &App, area: Rect) {
         };
         let selected = index == app.playlist_selected;
         let artist = song.artist.clone().unwrap_or_default();
+        let row = Rect {
+            x: area.x,
+            y: area.y + slot as u16,
+            width: area.width,
+            height: 1,
+        };
+        if selected {
+            paint_bar(frame, row);
+        }
         frame.render_widget(
             Paragraph::new(track_line(index + 1, song, &artist, selected, area.width)),
-            Rect {
-                x: area.x,
-                y: area.y + slot as u16,
-                width: area.width,
-                height: 1,
-            },
+            row,
         );
     }
 }
 
-/// One numbered track row, shared by the playlist view.
+/// One numbered track row, shared by the playlist, album and artist pages.
+///
+/// The caller paints the cursor bar: a line may be drawn into any rect, so the
+/// bar belongs to the row the caller owns, not to the line.
 fn track_line<'a>(
     number: usize,
     song: &crate::subsonic::Song,
@@ -1976,16 +1988,12 @@ fn track_line<'a>(
         .saturating_sub(tail.chars().count() + 8)
         .max(8);
     Line::from(vec![
-        Span::styled(format!("{number:>3}. "), Style::default().fg(MUTED)),
+        Span::styled(format!("{number:>3}. "), cursor_quiet(selected)),
         Span::styled(
             truncate_chars(&song.title, title_width),
-            if selected {
-                selected_style()
-            } else {
-                Style::default()
-            },
+            cursor_title(selected),
         ),
-        Span::styled(format!("  {tail}"), Style::default().fg(MUTED)),
+        Span::styled(format!("  {tail}"), cursor_quiet(selected)),
     ])
 }
 
@@ -2014,9 +2022,19 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
         };
         let is_playing = Some(index) == playing;
         let is_selected = index == selected;
+        let row = Rect {
+            x: inner.x,
+            y: inner.y + slot as u16,
+            width: inner.width,
+            height: 1,
+        };
+        if is_selected {
+            paint_bar(frame, row);
+        }
         // Two different questions, two different marks: `▶` says this is what
         // you hear, `›` says this is where Enter goes. A playing row that is
-        // also selected keeps `▶` and takes the selected colour.
+        // also selected keeps `▶`. On the bar both are black; off it, the
+        // accent belongs to playback alone.
         let marker = if is_playing {
             "▶ "
         } else if is_selected {
@@ -2024,8 +2042,15 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             "  "
         };
+        let marker_style = if is_selected {
+            on_bar(true)
+        } else if is_playing {
+            Style::default().fg(ACCENT)
+        } else {
+            Style::default()
+        };
         let title = if is_selected {
-            selected_style()
+            on_bar(true)
         } else if is_playing {
             playing_style()
         } else {
@@ -2033,14 +2058,7 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
         };
         let artist = item.artist.clone().unwrap_or_default();
         let mut spans = vec![
-            Span::styled(
-                marker,
-                if is_selected || is_playing {
-                    Style::default().fg(ACCENT)
-                } else {
-                    Style::default()
-                },
-            ),
+            Span::styled(marker, marker_style),
             Span::styled(item.title.clone(), title),
         ];
         // The artist is a second, quieter fact about the row: two spaces
@@ -2048,16 +2066,10 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
         if !artist.is_empty() {
             spans.push(Span::styled(
                 format!("  {artist}"),
-                Style::default().fg(MUTED),
+                cursor_quiet(is_selected),
             ));
         }
         let line = Line::from(spans);
-        let row = Rect {
-            x: inner.x,
-            y: inner.y + slot as u16,
-            width: inner.width,
-            height: 1,
-        };
         frame.render_widget(Paragraph::new(line), row);
     }
 }
@@ -3427,6 +3439,149 @@ mod tests {
             buffer[(label_x, label_y + wall.tile_h)].bg,
             ACCENT,
             "the next row of tiles is plain"
+        );
+    }
+
+    /// The rect every list view draws its rows into.
+    fn body_of(width: u16, height: u16) -> Rect {
+        shell_layout(Rect::new(0, 0, width, height)).body
+    }
+
+    /// Assert one whole row carries the cursor bar.
+    fn assert_bar(buffer: &ratatui::buffer::Buffer, row: Rect, what: &str) {
+        for x in row.x..row.x + row.width {
+            assert_eq!(
+                buffer[(x, row.y)].bg,
+                ACCENT,
+                "{what}: column {x} is off the bar"
+            );
+        }
+    }
+
+    /// The one-line row at `index` inside a list drawn in `area`.
+    fn line_at(area: Rect, index: u16) -> Rect {
+        Rect {
+            x: area.x,
+            y: area.y + index,
+            width: area.width,
+            height: 1,
+        }
+    }
+
+    #[test]
+    fn the_selected_track_in_a_playlist_sits_on_the_bar() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.playlist_detail = Some(playlist("morning", 3));
+        app.view = View::PlaylistDetail;
+        app.playlist_selected = 1;
+
+        let (width, height) = (100, 24);
+        let buffer = rendered_buffer(&app, width, height);
+        let body = body_of(width, height);
+
+        assert_bar(&buffer, line_at(body, 1), "the cursor's track");
+        assert_ne!(
+            buffer[(body.x, body.y + 2)].bg,
+            ACCENT,
+            "the track below the cursor keeps the plain background"
+        );
+    }
+
+    #[test]
+    fn the_selected_search_hit_sits_on_the_bar() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        app.view = View::Search;
+        app.search.query = "kid".into();
+        app.search.hits = vec![
+            crate::app::SearchHit::Album(album_with_cover("al1")),
+            crate::app::SearchHit::Song(crate::subsonic::Song {
+                id: "s1".into(),
+                title: "Kid A".into(),
+                ..Default::default()
+            }),
+        ];
+        app.search.selected = 1;
+
+        let (width, height) = (100, 24);
+        let buffer = rendered_buffer(&app, width, height);
+        let body = body_of(width, height);
+
+        assert_bar(&buffer, line_at(body, 1), "the cursor's hit");
+        assert_ne!(
+            buffer[(body.x, body.y)].bg,
+            ACCENT,
+            "the hit above the cursor keeps the plain background"
+        );
+    }
+
+    #[test]
+    fn the_selected_album_track_sits_on_the_bar_and_names_its_artist() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let mut album = album_with_cover("al1");
+        album.artist = Some("Radiohead".into());
+        album.song = (0..3)
+            .map(|i| crate::subsonic::Song {
+                id: format!("s{i}"),
+                title: format!("track {i}"),
+                artist: Some("Radiohead".into()),
+                duration: Some(200),
+                ..Default::default()
+            })
+            .collect();
+        app.detail = Some(album);
+        app.view = View::AlbumDetail;
+        app.detail_selected = 1;
+
+        let (width, height) = (100, 24);
+        let buffer = rendered_buffer(&app, width, height);
+        let body = body_of(width, height);
+        let track = Rect {
+            y: body.y + body.height.min(COVER_SPACE_H) + 1,
+            ..line_at(body, 0)
+        };
+
+        assert_bar(&buffer, track, "the cursor's track");
+        assert_ne!(
+            buffer[(body.x, track.y - 1)].bg,
+            ACCENT,
+            "the track above the cursor keeps the plain background"
+        );
+        let text = rendered_text(&app, width, height);
+        assert!(
+            text.contains("track 1  Radiohead"),
+            "album tracks name their artist like playlist rows do: {text}"
+        );
+    }
+
+    #[test]
+    fn only_the_queue_row_under_the_cursor_sits_on_the_bar() {
+        let mut app = playing_app();
+        app.view = View::Queue;
+        app.queue.jump_to(0);
+        app.queue_pin = Some(1);
+
+        let (width, height) = (100, 24);
+        let buffer = rendered_buffer(&app, width, height);
+        let body = body_of(width, height);
+        // The queue draws its own frame, so its rows sit inside the border.
+        let inner = Rect {
+            x: body.x + 1,
+            y: body.y + 1,
+            width: body.width - 2,
+            height: body.height - 2,
+        };
+
+        assert_bar(&buffer, line_at(inner, 1), "the cursor's row");
+        assert_ne!(
+            buffer[(inner.x, inner.y)].bg,
+            ACCENT,
+            "the playing row is marked by its glyph, not by the bar"
+        );
+        let text = rendered_text(&app, width, height);
+        assert!(text.contains("▶ Kid A"), "playback keeps its mark: {text}");
+        assert!(
+            text.contains("› The National Anthem"),
+            "the cursor keeps its own: {text}"
         );
     }
 

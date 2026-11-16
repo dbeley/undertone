@@ -99,9 +99,9 @@ The album's cover and its tracks; the bar keeps playing state.
             │
             │
             │
-            │   1. Track 1  3:20
-            │   2. Track 2  3:20
-            │   3. Track 3  3:20
+            │   1. Track 1  Test Artist  3:20
+            │   2. Track 2  Test Artist  3:20
+            │   3. Track 3  Test Artist  3:20
             │
             │
             │
@@ -312,7 +312,7 @@ What plays next; Enter starts from the cursor.
 
 ```
   Albums   1│ Queue                                                                                    0
-  Artists  2│ ┌ Queue - 0 tracks · shuffle off · repeat off ───────────────────────────────────────────┐
+  Artists  2│ ┌ Queue: 0 tracks · shuffle off · repeat off ────────────────────────────────────────────┐
   Starred  3│ │                                                                                        │
   Later    4│ │                                                                                        │
   Lists    5│ │                                                                                        │

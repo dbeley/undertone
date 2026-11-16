@@ -475,20 +475,26 @@ Four rules keep the screens coherent as the app grew:
   and below: at three lines per row that makes five, and a third of the albums
   on a 30-row screen disappear to draw it. The bar costs no cell, and the cover
   sits inside it instead of being fenced off from its own name. The wall's
-  selected tile gets the same bar under its name, for the same reason.
+  selected tile gets the same bar under its name, for the same reason. Every
+  other list uses that bar too: album tracks, an artist's top songs, playlist
+  tracks, the playlist list, search hits and the queue. A one-line row has no
+  cover to sit inside, but the cursor still has to look like the same thing as
+  it moves from a cover row into a track list - and in a sixteen-colour theme
+  the accent as a foreground reads quieter than the muted text beside it.
 - **History is a stack in both directions.** `h` goes back to where you came
   from and `l` comes forward again, so going back is reversible; `Left`/`Right`
   do the same. A wall keeps `h`/`l` for moving between covers, and a rail jump
   or a fresh drill-down clears the forward history, because those are new
   journeys rather than a walk back along an old one.
 
-- **Playing and selected are different things.** In the queue `▶` and the
-  accent colour mean "this is making sound", `›` and the cursor mean "Enter
-  goes here". Moving in the queue only moves the cursor: what plays, and what
-  plays next, are read from the queue's own position, so browsing a queue
-  cannot skip a track. Enter is the point where the two meet - it starts the
-  row under the cursor and the cursor then follows playback, as it does after
-  `>` or an automatic transition.
+- **Playing and selected are different things.** The accent as a *background*
+  is the cursor; as a *foreground* it is sound, and nothing else claims it. In
+  the queue `▶` means "this is making sound" and `›` means "Enter goes here";
+  a row can be both, and then it keeps `▶` on the bar. Moving in the queue only
+  moves the cursor: what plays, and what plays next, are read from the queue's
+  own position, so browsing a queue cannot skip a track. Enter is the point
+  where the two meet - it starts the row under the cursor and the cursor then
+  follows playback, as it does after `>` or an automatic transition.
 
 Sort and layout are saved in the session file, not the config: they are how you
 left the place, set by pressing `S` and `w`, and restoring them before the first
