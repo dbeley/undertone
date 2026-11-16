@@ -73,7 +73,11 @@ def split_complete(text):
         if re.match(r"\x1b\[[0-9;?]*[A-Za-z]", tail):
             return text, ""
         return text[:start], tail
-    if kind == "]":
+    if kind in "]_P^X":
+        # OSC, APC (kitty graphics), DCS (sixel), PM and SOS all run to a
+        # string terminator. A DCS also accepts BEL in practice, and holding
+        # the tail until a terminator arrives is what keeps a cover's payload
+        # out of the grid.
         if re.search(r"\x07|\x1b\\", tail):
             return text, ""
         return text[:start], tail
@@ -107,6 +111,14 @@ class Screen:
                     i += m.end()
                     continue
                 m = re.match(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", complete[i:])
+                if m:
+                    i += m.end()
+                    continue
+                # APC, DCS, PM and SOS: string sequences, not text. Kitty
+                # graphics arrive as APC (`ESC _ G ...`) and sixel as DCS
+                # (`ESC P ...`); printing their payload as characters is how
+                # `Ga=d,d=a,q=2` ended up in a frame.
+                m = re.match(r"\x1b[_P^X][^\x07\x1b]*(?:\x07|\x1b\\)", complete[i:])
                 if m:
                     i += m.end()
                     continue
