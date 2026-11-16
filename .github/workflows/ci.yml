@@ -41,8 +41,11 @@ jobs:
           nix develop -c python3 scripts/screens.py result/bin/undertone
           git diff --exit-code -- docs/SCREENS.md
       - name: binary size gate
+        # `.undertone-wrapped` is the binary itself; `undertone` next to it is
+        # the 668-byte shell wrapper that puts mpv and chafa on PATH, so
+        # measuring that one would make this gate unfailable.
         run: |
-          size=$(stat -c%s result/bin/undertone)
+          size=$(stat -c%s result/bin/.undertone-wrapped)
           echo "binary size: $size bytes"
           limit=12582912
           if [ "$size" -gt "$limit" ]; then
