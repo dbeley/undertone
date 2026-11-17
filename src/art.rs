@@ -297,7 +297,20 @@ mod tests {
         };
         let key = service.request("al-1", 4, 3, Palette::Partial, false);
         assert!(key.contains("symbols"));
-        assert_eq!(service.pending(), 1);
+
+        // Polled rather than counted: `pending()` is one until the worker
+        // picks the request up, and how long that takes is the scheduler's
+        // business - asserting on it made this test fail whenever the machine
+        // was busy.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !service.is_ready(&key) {
+            service.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            service.is_ready(&key),
+            "symbol art is encoded like any other"
+        );
         service.shutdown();
     }
 
