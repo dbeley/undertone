@@ -1694,7 +1694,13 @@ fn draw_wall(
         // The marks come first, in the same order rows put them: star then clock.
         // Selection is the bar under the name, the same answer the rows give,
         // since a border would eat the line the name sits on.
-        let label = format!("{}{}", mark_prefix(tile.starred, tile.later), tile.label);
+        // Clamped here rather than by the rectangle: ratatui cuts at the pane
+        // edge without saying so, and "Chillhop Esse" under a cover reads as a
+        // bug. A name that had to be cut says so.
+        let label = truncate_chars(
+            &format!("{}{}", mark_prefix(tile.starred, tile.later), tile.label),
+            usize::from(wall.label_w()),
+        );
         frame.render_widget(
             Paragraph::new(label).style(if is_selected {
                 on_bar(true)
@@ -3477,6 +3483,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_wall_label_cut_to_fit_ends_in_an_ellipsis() {
+        let mut app = test_app(ArtProtocol::Symbols);
+        let mut long = album_with_cover("a");
+        long.name = "A name far longer than one tile".into();
+        app.albums = vec![long];
+        app.view = View::Albums;
+        app.layout = AlbumLayout::Grid;
+
+        let (width, height) = (100, 30);
+        let body = shell_layout(Rect::new(0, 0, width, height)).body;
+        let wall = app.wall(body.width, body.height);
+        let label = truncate_chars(
+            "A name far longer than one tile",
+            usize::from(wall.label_w()),
+        );
+
+        assert!(label.ends_with('…'), "{label}");
+        assert_eq!(
+            label.chars().count(),
+            usize::from(wall.label_w()),
+            "the tile is filled, not the name"
+        );
+
+        let text = rendered_text(&app, width, height);
+        assert!(
+            text.contains(&label),
+            "the frame carries the clamped label, not the cut name: {text}"
+        );
     }
 
     #[test]
