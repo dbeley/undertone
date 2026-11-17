@@ -43,8 +43,10 @@ const TILE_LABEL: u16 = 1;
 /// pixels, but a terminal cell is whatever the font makes it - 16x41 on the
 /// Pocket Reform. Images are drawn at their own pixel size, so asking for a
 /// `6x3` chafa box put a 60x60 image inside a 96x123 slot: a cover using half
-/// of the space reserved for it. Sizing the chafa box in real pixels is what
-/// makes a thumbnail fill its tile.
+/// of the space reserved for it. Sizing the chafa box in the slot's real
+/// pixels, then counting those in chafa's cells, is what makes a thumbnail
+/// fill its tile - and on kitty the payload is drawn at that pixel size, so
+/// chafa's cell shape cannot stretch it either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thumb {
     /// Cells reserved on screen.
@@ -2960,18 +2962,24 @@ impl App {
 
     /// What to ask chafa for, in chafa's own cells.
     ///
-    /// kitty graphics scale the payload into the cells the image declares, and
-    /// those are the *terminal's* cells. So the request is the slot, in cells.
-    /// Asking for chafa's pixel-derived cells instead - 200x200 px as "20x10" -
-    /// made the terminal draw a 20x10 *terminal* cell image: twice the row it
-    /// belonged to, over the album title below it. Only a 10x20 cell terminal
-    /// was ever right, and a terminal with cells smaller than chafa's lost the
-    /// cover inside its slot instead.
+    /// chafa lays images out in a 10x20 pixel cell. Both pixel protocols get a
+    /// size derived from that, because that is the only unit chafa speaks, but
+    /// the two then display differently:
     ///
-    /// sixel has no cell rectangle: it is rasterised at its pixel size, so
-    /// there the request has to be the slot in pixels, counted in chafa's 10x20
-    /// cell. Rounding to whole 20-pixel steps keeps the box square, which is
-    /// what a square cover fills exactly - no letterbox, no dead band.
+    /// * sixel is rasterised at its pixel size and has no cell rectangle, so
+    ///   the request is the slot in pixels, counted in chafa's 10x20 cell.
+    ///   Rounding to whole 20-pixel steps keeps the box square, which is what
+    ///   a square cover fills exactly - no letterbox, no dead band.
+    /// * kitty is drawn at the payload's pixel size too - the worker strips the
+    ///   cell keys chafa declares - but chafa's payload is sized for *its*
+    ///   10x20 cell, not the terminal's. So the request is the slot in chafa's
+    ///   cells, rounded down: chafa never fills more than it was asked for, so
+    ///   the raster stays inside the slot and off the label under it.
+    ///
+    /// Handing a kitty terminal the slot in terminal cells instead - the old
+    /// behaviour - made the terminal stretch a 10x20-cell image into, say, a
+    /// 10x25-cell box: square covers 25% taller, which is exactly what a
+    /// 10x25 font shows.
     fn art_size(&self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) -> (u32, u32) {
         match self.protocol {
             ArtProtocol::Sixel => {
@@ -2982,7 +2990,11 @@ impl App {
                     * 20;
                 (px / 10, px / 20)
             }
-            ArtProtocol::Kitty | ArtProtocol::Symbols => (u32::from(cols), u32::from(rows)),
+            ArtProtocol::Kitty => (
+                (u32::from(cols) * cell_w / 10).max(1),
+                (u32::from(rows) * cell_h / 20).max(1),
+            ),
+            ArtProtocol::Symbols => (u32::from(cols), u32::from(rows)),
         }
     }
 }
@@ -3287,12 +3299,12 @@ mod tests {
     }
 
     #[test]
-    fn a_kitty_cover_asks_for_the_cells_it_occupies() {
-        // A kitty terminal reads the size chafa was asked for as *its own*
-        // cells, so requesting chafa's pixel-derived cells drew a 20x10 image
-        // across twenty terminal columns and ten rows - twice the row it
-        // belonged to, over the album title below it. Only a terminal whose
-        // cell is exactly 10x20 was ever right.
+    fn a_kitty_cover_is_asked_for_in_chafas_pixels_and_drawn_at_that_size() {
+        // The payload is drawn at its own pixel size - the worker strips the
+        // cell keys chafa declares - so the request is the slot in chafa's
+        // 10x20 cells. A kitty terminal would otherwise stretch a 10x20-cell
+        // raster into its own cells: on a 10x25 font a square cover came out
+        // 25% taller, which is what the ThinkPad's ghostty showed.
         let mut app = pocket_reform();
         app.protocol = ArtProtocol::Kitty;
 
@@ -3300,16 +3312,46 @@ mod tests {
         assert_eq!(thumb.rows, ROW_HEIGHT, "a list cover stays inside its row");
         assert_eq!(
             (thumb.art_cols, thumb.art_rows),
-            (u32::from(thumb.cols), u32::from(thumb.rows)),
-            "the request is the slot, in cells"
+            (12, 6),
+            "the slot is 128x123 px, so chafa gets 120x120"
         );
 
         let wall = app.wall(101, 19).thumb;
-        assert_eq!(
-            (wall.art_cols, wall.art_rows),
-            (u32::from(wall.cols), u32::from(wall.rows)),
-            "and the same on the wall"
-        );
+        assert_eq!((wall.art_cols, wall.art_rows), (20, 10));
+        for thumb in [thumb, wall] {
+            // Rounded down, so the raster can never spill out of the slot.
+            assert!(thumb.art_cols * 10 <= u32::from(thumb.cols) * 16);
+            assert!(thumb.art_rows * 20 <= u32::from(thumb.rows) * 41);
+            let px = thumb.art_cols * 10;
+            let py = thumb.art_rows * 20;
+            let slot_w = u32::from(thumb.cols) * 16;
+            let slot_h = u32::from(thumb.rows) * 41;
+            assert!(
+                px * 100 / slot_w >= 90 && py * 100 / slot_h >= 90,
+                "the cover still fills its slot: {px}x{py} of {slot_w}x{slot_h}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ghostty_cover_never_asks_for_more_than_its_slot() {
+        // The reported device: a 10x25 cell. A 13x5 slot is 130x125 px, so the
+        // request is 13x6 chafa cells - a 130x120 px box. chafa fits a square
+        // cover into 120x120, and with no cell keys in the payload the
+        // terminal draws it at that size: square, inside the slot, instead of
+        // stretched to the slot's 125 px height as it used to be.
+        let mut app = app();
+        app.protocol = ArtProtocol::Kitty;
+        app.cell = CellSize {
+            width: 10,
+            height: 25,
+        };
+
+        let wall = app.wall(101, 19).thumb;
+        assert_eq!((wall.cols, wall.rows), (13, 5));
+        assert_eq!((wall.art_cols, wall.art_rows), (13, 6));
+        assert!(wall.art_cols * 10 <= u32::from(wall.cols) * 10);
+        assert!(wall.art_rows * 20 <= u32::from(wall.rows) * 25);
     }
 
     #[test]

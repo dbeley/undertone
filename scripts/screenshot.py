@@ -284,13 +284,15 @@ class Capture:
         if fields.get("a") == "T":
             # A new image starts here, at the cursor. `c`/`r` are the cells it
             # covers; `s`/`v` are its pixels; `i` is the id an erase names.
+            # The app strips `c`/`r` so the terminal draws a cover at the
+            # pixels chafa made it (and square); keep 0 to mean "native size".
             self.untagged += 1
             self.blob = Blob(
                 fields.get("i", f"untagged-{self.untagged}"),
                 int(fields.get("s", CELL_W)),
                 int(fields.get("v", CELL_H)),
-                int(fields.get("r", 1)),
-                int(fields.get("c", 1)),
+                int(fields["r"]) if "r" in fields else 0,
+                int(fields["c"]) if "c" in fields else 0,
             )
             self.blob_at = (self.y, self.x)
         if self.blob is None:
@@ -304,6 +306,8 @@ class Capture:
                 col,
                 self.blob.rows,
                 self.blob.cols,
+                self.blob.width,
+                self.blob.height,
                 png(self.blob.width, self.blob.height, bytes(self.blob.data)),
             )
             self.blob = None
@@ -403,10 +407,13 @@ def svg(capture, title="undertone"):
                 )
 
     # The covers, in the cells the app placed them and at the pixels it sent.
-    for row, col, rows, cols, data in capture.images.values():
+    # A cover with no cell rectangle is drawn at its own pixel size.
+    for row, col, rows, cols, width, height, data in capture.images.values():
+        box_w = cols * CELL_W if cols else width
+        box_h = rows * CELL_H if rows else height
         out.append(
             f'<image x="{col * CELL_W}" y="{row * CELL_H}" '
-            f'width="{cols * CELL_W}" height="{rows * CELL_H}" '
+            f'width="{box_w}" height="{box_h}" '
             'preserveAspectRatio="none" '
             f'xlink:href="data:image/png;base64,{base64.b64encode(data).decode()}"/>'
         )

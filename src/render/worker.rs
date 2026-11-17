@@ -252,10 +252,13 @@ fn worker_loop(
                 // kitty images are deleted by id, and a blob cached before ids
                 // were injected has none - so it could be painted and never
                 // removed. Re-tag on the way out (the tag is idempotent) and
-                // rewrite the entry so old caches heal themselves.
+                // rewrite the entry so old caches heal themselves. Cell keys
+                // are stripped at the same time: an image that declares them
+                // is stretched by the terminal, and covers stop being square.
                 let blob = match renderer.protocol() {
                     ArtProtocol::Kitty => {
-                        let tagged = clear::tag_kitty(&blob, clear::kitty_id(&job.key));
+                        let native = clear::strip_kitty_cells(&blob);
+                        let tagged = clear::tag_kitty(&native, clear::kitty_id(&job.key));
                         if tagged != blob {
                             let _ = blobs.put(&job.key, &tagged);
                         }
@@ -357,9 +360,13 @@ fn worker_loop(
             Ok(rendered) => {
                 for (key, blob) in miss_keys.into_iter().zip(rendered) {
                     // kitty images need an id to be deletable later; chafa does not set
-                    // one, so it is injected once, before the blob is cached.
+                    // one, so it is injected once, before the blob is cached. The
+                    // declared cell size goes the other way: see strip_kitty_cells.
                     let blob = match renderer.protocol() {
-                        ArtProtocol::Kitty => clear::tag_kitty(&blob, clear::kitty_id(&key)),
+                        ArtProtocol::Kitty => {
+                            let native = clear::strip_kitty_cells(&blob);
+                            clear::tag_kitty(&native, clear::kitty_id(&key))
+                        }
                         _ => blob,
                     };
                     let _ = blobs.put(&key, &blob);

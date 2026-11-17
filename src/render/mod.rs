@@ -18,7 +18,7 @@ pub use cache::BlobCache;
 pub use chafa::{
     sixel_dimensions, split_sequences, ArtRenderer, ChafaRenderer, RenderError, RenderRequest,
 };
-pub use clear::{blank_sixel, kitty_delete, kitty_id, tag_kitty};
+pub use clear::{blank_sixel, kitty_delete, kitty_id, strip_kitty_cells, tag_kitty};
 pub use images::ImageCache;
 pub use painter::{FramePlan, PaintOp, Painter, Placement};
 pub use protocol::{detect_protocol, ArtProtocol, Caps, CellSize};

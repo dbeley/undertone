@@ -101,6 +101,56 @@ pub fn kitty_delete(id: u32) -> Vec<u8> {
     format!("\x1b_Ga=d,d=i,i={id}\x1b\\").into_bytes()
 }
 
+/// Drop the `c=` and `r=` keys from a kitty blob, so the terminal draws the
+/// image at its own pixel size instead of stretching it into a cell rectangle.
+///
+/// That stretching is where square covers stop being square. chafa sizes its
+/// kitty payload for its own 10x20 pixel cell, and the cells it declares are
+/// those - not the terminal's. On a 10x25 cell (ghostty's Iosevka) a 13x5 slot
+/// is 130x125 px, while chafa hands over a 100x100 box declared as 10x5 cells:
+/// the terminal scales it to 100x125 and the cover grows 25% taller. Left to
+/// its own pixel size, the payload is already the right shape. It is also
+/// guaranteed to fit: the request is rounded down to chafa's cells in
+/// `App::art_size`, and chafa never fills more than it was asked for.
+///
+/// Only the first chunk carries the keys; continuations pass through byte for
+/// byte. Blobs without the keys come back unchanged, so this heals caches
+/// written before the fix as well.
+pub fn strip_kitty_cells(blob: &[u8]) -> Vec<u8> {
+    let Some(start) = find(blob, b"\x1b_G") else {
+        return blob.to_vec();
+    };
+    let keys_start = start + 3;
+    let keys_end = blob[keys_start..]
+        .iter()
+        .position(|byte| *byte == b';')
+        .map(|offset| keys_start + offset)
+        .or_else(|| find(&blob[keys_start..], b"\x1b\\").map(|offset| keys_start + offset))
+        .unwrap_or(blob.len());
+    let Ok(keys) = std::str::from_utf8(&blob[keys_start..keys_end]) else {
+        return blob.to_vec();
+    };
+    let kept: Vec<&str> = keys
+        .split(',')
+        .filter(|key| !key.starts_with("c=") && !key.starts_with("r="))
+        .collect();
+    if kept.len() == keys.split(',').count() {
+        return blob.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(blob.len());
+    out.extend_from_slice(&blob[..keys_start]);
+    out.extend_from_slice(kept.join(",").as_bytes());
+    out.extend_from_slice(&blob[keys_end..]);
+    out
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +210,44 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&kitty_delete(99)),
             "\x1b_Ga=d,d=i,i=99\x1b\\"
+        );
+    }
+
+    #[test]
+    fn stripping_cells_leaves_the_native_size() {
+        let blob = b"\x1b_Gi=7,a=T,f=32,s=100,v=100,c=10,r=5,m=1,q=2\x1b\\\x1b_Gi=7,m=1;AAAA\x1b\\";
+        let text = String::from_utf8_lossy(&strip_kitty_cells(blob)).to_string();
+
+        assert!(
+            text.starts_with("\x1b_Gi=7,a=T,f=32,s=100,v=100,m=1,q=2\x1b\\"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("c=10,"),
+            "the cell width must be gone: {text}"
+        );
+        assert!(
+            !text.contains("r=5,"),
+            "the cell height must be gone: {text}"
+        );
+        // The payload and the continuation chunk are untouched.
+        assert!(text.ends_with("\x1b_Gi=7,m=1;AAAA\x1b\\"), "{text}");
+    }
+
+    #[test]
+    fn stripping_is_idempotent_and_leaves_other_blobs_alone() {
+        let blob = b"\x1b_Gi=7,a=T,s=40,v=20\x1b\\";
+        assert_eq!(strip_kitty_cells(blob), blob);
+
+        let once = strip_kitty_cells(b"\x1b_Gi=7,a=T,s=40,v=20,c=4,r=1\x1b\\");
+        assert_eq!(strip_kitty_cells(&once), once);
+        assert_eq!(
+            String::from_utf8_lossy(&once),
+            "\x1b_Gi=7,a=T,s=40,v=20\x1b\\"
+        );
+        assert_eq!(
+            strip_kitty_cells(b"\x1bP0;1;0qdata\x1b\\"),
+            b"\x1bP0;1;0qdata\x1b\\"
         );
     }
 }
