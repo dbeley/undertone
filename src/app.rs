@@ -2270,10 +2270,11 @@ impl App {
                 self.search.typing = true;
                 self.search.query.clear();
             }
-            // On a wall, h/l belong to the wall; everywhere else they walk the
-            // history, which makes `h` reversible.
-            KeyCode::Char('h') if !self.in_wall() => self.go_back(),
-            KeyCode::Char('l') if !self.in_wall() => self.go_forward(),
+            // On a wall, h/l and the horizontal arrows belong to the wall;
+            // everywhere else they walk the history, which makes `h`
+            // reversible.
+            KeyCode::Char('h') | KeyCode::Left if !self.in_wall() => self.go_back(),
+            KeyCode::Char('l') | KeyCode::Right if !self.in_wall() => self.go_forward(),
             KeyCode::Esc => self.go_back(),
             KeyCode::Char('?') => self.set_view(View::Help),
             KeyCode::Char('Q') => {
@@ -2326,10 +2327,8 @@ impl App {
             KeyCode::Char('5') => self.open_playlists(),
             KeyCode::Char('6') => self.jump_to_view(View::Queue),
             KeyCode::Char('*') => self.toggle_star(),
-            KeyCode::Char('h') if self.in_wall() => self.move_horizontal(-1),
-            KeyCode::Char('l') if self.in_wall() => self.move_horizontal(1),
-            KeyCode::Left if !self.in_wall() => self.go_back(),
-            KeyCode::Right if !self.in_wall() => self.go_forward(),
+            KeyCode::Char('h') | KeyCode::Left if self.in_wall() => self.move_horizontal(-1),
+            KeyCode::Char('l') | KeyCode::Right if self.in_wall() => self.move_horizontal(1),
             KeyCode::Char('j') | KeyCode::Down => self.move_vertical(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_vertical(-1),
             KeyCode::Char('g') => self.jump_cursor(0),
@@ -4184,6 +4183,36 @@ mod tests {
         app.handle_key(key(KeyCode::Char('h')));
         assert_eq!(app.selected, 1);
         assert_eq!(app.view, View::Albums);
+    }
+
+    #[test]
+    fn the_arrows_move_across_a_wall_like_h_and_l() {
+        let mut app = app();
+        app.view = View::Albums;
+        app.layout = AlbumLayout::Grid;
+        app.albums = (0..40)
+            .map(|i| Album {
+                id: format!("al-{i}"),
+                name: format!("album {i}"),
+                ..Default::default()
+            })
+            .collect();
+        app.list_area = (100, 20);
+        app.selected = 1;
+
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.view, View::Albums, "the wall keeps the arrows too");
+        assert_eq!(app.selected, 2, "and right steps to the next cover");
+
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.selected, 1);
+
+        // The vertical arrows keep their wall stride as well.
+        let step = app.wall(100, 20).cols.max(1);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.selected, 1 + step);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
