@@ -15,44 +15,7 @@ What the art itself looks like in each protocol is in
 
 ## The library
 
-Album list, with the rail, the list's own header and the three-column bar.
-
-```
-▸ Albums   1│ Albums · random                                                                      1 / 3
-  Artists  2│ ▚ ▚ ▚  Fixture One
-  Starred  3│        Test Artist · 2000
-  Later    4│        3 tracks
-  Lists    5│ ▚ ▚ ▚  Fixture Two
-  Queue    6│        Other Band · 2001
-            │        3 tracks
-            │ ▚ ▚ ▚  Third
-            │        Nobody · 2002
-            │        3 tracks
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-            │
-  Search   /│
-  Help     ?│
-────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │fixture 1.16.1                  │next
-Enter on an album to start         │S sort · w layout · a next · A  │end of queue
-                                   │end · * star                    │
-                                   │                                │
-```
-
-## The wall
-
-`w` turns any album list into a wall of covers; each list keeps its own choice.
+What the app opens on: a wall of covers, with the rail and the three-column bar.
 
 ```
 ▸ Albums   1│ Albums · random                                                                      1 / 3
@@ -81,7 +44,44 @@ Enter on an album to start         │S sort · w layout · a next · A  │end 
   Search   /│
   Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │albums: wall                    │next
+nothing playing                    │fixture 1.16.1                  │next
+Enter on an album to start         │S sort · w layout · a next · A  │end of queue
+                                   │end · * star                    │
+                                   │                                │
+```
+
+## The list
+
+`w` turns any wall back into rows; each list keeps its own choice.
+
+```
+▸ Albums   1│ Albums · random                                                                      1 / 3
+  Artists  2│ ▚ ▚ ▚  Fixture One
+  Starred  3│        Test Artist · 2000
+  Later    4│        3 tracks
+  Lists    5│ ▚ ▚ ▚  Fixture Two
+  Queue    6│        Other Band · 2001
+            │        3 tracks
+            │ ▚ ▚ ▚  Third
+            │        Nobody · 2002
+            │        3 tracks
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+            │
+  Search   /│
+  Help     ?│
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing playing                    │albums: list                    │next
 Enter on an album to start         │S sort · w layout · a next · A  │end of queue
                                    │end · * star                    │
                                    │                                │
@@ -118,7 +118,7 @@ The album's cover and its tracks; the bar keeps playing state.
   Search   /│
   Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
-nothing playing                    │albums: list                    │next
+nothing playing                    │albums: wall                    │next
 Enter on an album to start         │Enter play · a next · A end · i │end of queue
                                    │artist · h back                 │
                                    │                                │
@@ -204,12 +204,12 @@ Artists as a list; `w` turns this into a wall of covers.
 
 ```
   Albums   1│ Artists · most albums                                                                1 / 1
-▸ Artists  2│        Test Artist
-  Starred  3│        3 albums
+▸ Artists  2│
+  Starred  3│
   Later    4│
   Lists    5│
   Queue    6│
-            │
+            │ Test Artist
             │
             │
             │

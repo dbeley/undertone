@@ -3,11 +3,14 @@
 A lightweight Subsonic/Navidrome music client built for speed. Terminal UI, keyboard-only controls, small
 memory footprint.
 
-![Undertone with an album open and playing: the rail on the left, the cover and its
-tracks, and the bar along the bottom with what is playing, the keys that work here and
-what plays next.](docs/screenshot.svg)
+![Undertone's library: a wall of album covers with the rail on the left, and the bar
+along the bottom saying what is playing, the keys that work here and what plays
+next.](docs/screenshot-wall.svg)
 
-Every other screen - the wall of covers, artists, search, the queue - is in
+![An album open: its cover, its tracks, and the same bar with elapsed and total time
+either side of a progress rule.](docs/screenshot-album.svg)
+
+Every other screen - artists, search, the queue - is in
 [docs/SCREENS.md](docs/SCREENS.md).
 
 ## Requirements

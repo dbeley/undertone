@@ -2703,6 +2703,7 @@ mod tests {
     fn switching_views_erases_previously_painted_art() {
         let mut app = test_app(ArtProtocol::Sixel);
         app.albums = vec![album_with_cover("a"), album_with_cover("b")];
+        app.layout = crate::app::AlbumLayout::List;
         let thumb = app.list_thumb();
         warm_art(&mut app, thumb.art_cols, thumb.art_rows);
         let area = Rect::new(0, 0, 100, 30);
@@ -2725,6 +2726,7 @@ mod tests {
     fn going_back_to_albums_repaints_the_thumbnails() {
         let mut app = test_app(ArtProtocol::Sixel);
         app.albums = vec![album_with_cover("a")];
+        app.layout = crate::app::AlbumLayout::List;
         let thumb = app.list_thumb();
         warm_art(&mut app, thumb.art_cols, thumb.art_rows);
         let area = Rect::new(0, 0, 100, 30);
@@ -2816,6 +2818,7 @@ mod tests {
         };
         let thumb = app.list_thumb();
         app.albums = vec![album_with_cover("a")];
+        app.layout = crate::app::AlbumLayout::List;
         warm_art(&mut app, thumb.art_cols, thumb.art_rows);
 
         collect_placements(&mut app, Rect::new(0, 0, 115, 25));
@@ -3393,6 +3396,7 @@ mod tests {
             undertone_artist("ar-2", "Boards of Canada", 1),
         ];
         app.view = View::Artists;
+        app.artist_layout = crate::app::AlbumLayout::List;
         let text = rendered_text(&app, 80, 24);
         assert!(text.contains("Aphex Twin"), "{text}");
         assert!(text.contains("3 albums"), "{text}");
@@ -3448,6 +3452,7 @@ mod tests {
         let mut app = test_app(ArtProtocol::Symbols);
         app.albums = vec![album_with_cover("a"), album_with_cover("b")];
         app.view = View::Albums;
+        app.layout = crate::app::AlbumLayout::List;
         app.selected = 0;
 
         let (width, height) = (100, 30);
@@ -3954,6 +3959,7 @@ mod tests {
         starred.starred = Some("2020-01-01".into());
         app.favorite_artists = vec![starred];
         app.favorites_pane = FavoritePane::Artists;
+        app.favorite_artists_layout = crate::app::AlbumLayout::List;
         app.view = View::Favorites;
 
         let text = rendered_text(&app, 80, 24);

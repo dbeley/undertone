@@ -587,10 +587,14 @@ impl App {
             view: View::Albums,
             nav_stack: Vec::new(),
             forward_stack: Vec::new(),
-            layout: AlbumLayout::List,
-            artist_layout: AlbumLayout::List,
-            favorites_layout: AlbumLayout::List,
-            later_layout: AlbumLayout::List,
+            // A library is browsed by its covers, so every list that has a
+            // wall opens on it. `w` still gives the rows back, and a session
+            // that saved a choice keeps it: this is only where a fresh start
+            // lands.
+            layout: AlbumLayout::Grid,
+            artist_layout: AlbumLayout::Grid,
+            favorites_layout: AlbumLayout::Grid,
+            later_layout: AlbumLayout::Grid,
             albums: Vec::new(),
             sort: AlbumListType::Random,
             // Nothing has been requested yet, so there is no next page to
@@ -634,7 +638,7 @@ impl App {
             favorite_artists: Vec::new(),
             favorite_artist_selected: 0,
             favorite_artist_scroll: 0,
-            favorite_artists_layout: AlbumLayout::List,
+            favorite_artists_layout: AlbumLayout::Grid,
             favorites_pane: FavoritePane::Albums,
             auto_dj_seed: None,
             pending_seek: None,
@@ -2945,18 +2949,40 @@ impl App {
             rows = avail_h;
             cols = cols_for(rows, cell_w, cell_h);
         }
-        // chafa's box is counted in whole 20-pixel steps, and a square box is
-        // what a square cover fills exactly - no letterbox, no dead band.
-        let px = (u32::from(cols) * cell_w)
-            .min(u32::from(rows) * cell_h)
-            .max(20)
-            / 20
-            * 20;
+        let (art_cols, art_rows) = self.art_size(cols, rows, cell_w, cell_h);
         Thumb {
             cols,
             rows,
-            art_cols: px / 10,
-            art_rows: px / 20,
+            art_cols,
+            art_rows,
+        }
+    }
+
+    /// What to ask chafa for, in chafa's own cells.
+    ///
+    /// kitty graphics scale the payload into the cells the image declares, and
+    /// those are the *terminal's* cells. So the request is the slot, in cells.
+    /// Asking for chafa's pixel-derived cells instead - 200x200 px as "20x10" -
+    /// made the terminal draw a 20x10 *terminal* cell image: twice the row it
+    /// belonged to, over the album title below it. Only a 10x20 cell terminal
+    /// was ever right, and a terminal with cells smaller than chafa's lost the
+    /// cover inside its slot instead.
+    ///
+    /// sixel has no cell rectangle: it is rasterised at its pixel size, so
+    /// there the request has to be the slot in pixels, counted in chafa's 10x20
+    /// cell. Rounding to whole 20-pixel steps keeps the box square, which is
+    /// what a square cover fills exactly - no letterbox, no dead band.
+    fn art_size(&self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) -> (u32, u32) {
+        match self.protocol {
+            ArtProtocol::Sixel => {
+                let px = (u32::from(cols) * cell_w)
+                    .min(u32::from(rows) * cell_h)
+                    .max(20)
+                    / 20
+                    * 20;
+                (px / 10, px / 20)
+            }
+            ArtProtocol::Kitty | ArtProtocol::Symbols => (u32::from(cols), u32::from(rows)),
         }
     }
 }
@@ -3118,6 +3144,7 @@ mod tests {
     #[test]
     fn j_and_k_move_the_selection_within_bounds() {
         let mut app = app();
+        app.layout = AlbumLayout::List;
         app.albums = vec![album("a", 1), album("b", 1), album("c", 1)];
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.selected, 1);
@@ -3171,6 +3198,7 @@ mod tests {
     #[test]
     fn ctrl_d_and_ctrl_u_page_by_a_screenful() {
         let mut app = app();
+        app.layout = AlbumLayout::List;
         app.albums = (0..60).map(|i| album(&i.to_string(), 1)).collect();
         // 20 rows at ROW_HEIGHT 3 is six albums per page.
         app.list_area = (100, 20);
@@ -3259,6 +3287,32 @@ mod tests {
     }
 
     #[test]
+    fn a_kitty_cover_asks_for_the_cells_it_occupies() {
+        // A kitty terminal reads the size chafa was asked for as *its own*
+        // cells, so requesting chafa's pixel-derived cells drew a 20x10 image
+        // across twenty terminal columns and ten rows - twice the row it
+        // belonged to, over the album title below it. Only a terminal whose
+        // cell is exactly 10x20 was ever right.
+        let mut app = pocket_reform();
+        app.protocol = ArtProtocol::Kitty;
+
+        let thumb = app.list_thumb();
+        assert_eq!(thumb.rows, ROW_HEIGHT, "a list cover stays inside its row");
+        assert_eq!(
+            (thumb.art_cols, thumb.art_rows),
+            (u32::from(thumb.cols), u32::from(thumb.rows)),
+            "the request is the slot, in cells"
+        );
+
+        let wall = app.wall(101, 19).thumb;
+        assert_eq!(
+            (wall.art_cols, wall.art_rows),
+            (u32::from(wall.cols), u32::from(wall.rows)),
+            "and the same on the wall"
+        );
+    }
+
+    #[test]
     fn a_list_thumbnail_is_as_tall_as_its_row() {
         let app = pocket_reform();
         let thumb = app.list_thumb();
@@ -3343,6 +3397,8 @@ mod tests {
     fn vim_keys_move_within_listen_later() {
         let mut app = app();
         app.albums = vec![album("a", 1), album("b", 1), album("c", 1)];
+        app.layout = AlbumLayout::List;
+        app.later_layout = AlbumLayout::List;
         // Move between toggles: `z` on the same row would add then remove.
         app.handle_key(key(KeyCode::Char('z')));
         app.handle_key(key(KeyCode::Char('j')));
@@ -3764,7 +3820,7 @@ mod tests {
     }
 
     #[test]
-    fn w_turns_the_artist_list_into_a_wall() {
+    fn w_turns_the_artist_wall_into_a_list() {
         let mut app = app();
         app.view = View::Artists;
         app.artists = (0..6)
@@ -3778,16 +3834,17 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('w')));
 
-        assert_eq!(app.artist_layout, crate::app::AlbumLayout::Grid);
+        assert_eq!(app.artist_layout, AlbumLayout::List);
         assert_eq!(app.artist_scroll, 0);
     }
 
     #[test]
-    fn the_artist_wall_leaves_the_album_layout_alone() {
+    fn the_artist_layout_leaves_the_album_layout_alone() {
         let mut app = app();
         app.view = View::Artists;
         app.handle_key(key(KeyCode::Char('w')));
-        assert_eq!(app.layout, crate::app::AlbumLayout::List);
+        assert_eq!(app.artist_layout, crate::app::AlbumLayout::List);
+        assert_eq!(app.layout, crate::app::AlbumLayout::Grid, "not the library");
     }
 
     #[test]
@@ -3807,18 +3864,18 @@ mod tests {
         // Starred.
         app.view = View::Favorites;
         app.handle_key(key(KeyCode::Char('w')));
-        assert_eq!(app.favorites_layout, AlbumLayout::Grid);
+        assert_eq!(app.favorites_layout, AlbumLayout::List);
         assert_eq!(
             app.later_layout,
-            AlbumLayout::List,
+            AlbumLayout::Grid,
             "only this list changes"
         );
 
         // Later.
         app.view = View::ListenLater;
         app.handle_key(key(KeyCode::Char('w')));
-        assert_eq!(app.later_layout, AlbumLayout::Grid);
-        assert_eq!(app.layout, AlbumLayout::List, "and not the library");
+        assert_eq!(app.later_layout, AlbumLayout::List);
+        assert_eq!(app.layout, AlbumLayout::Grid, "and not the library");
     }
 
     #[test]
@@ -4053,6 +4110,7 @@ mod tests {
             ..Default::default()
         });
         app.set_view(View::AlbumDetail);
+        app.layout = AlbumLayout::List;
 
         app.handle_key(key(KeyCode::Char('h')));
         assert_eq!(app.view, View::Albums);
@@ -4112,6 +4170,7 @@ mod tests {
             ..Default::default()
         });
         app.set_view(View::AlbumDetail);
+        app.layout = AlbumLayout::List;
 
         app.handle_key(key(KeyCode::Left));
         assert_eq!(app.view, View::Albums);
@@ -4391,6 +4450,7 @@ mod tests {
     #[test]
     fn h_leaves_listen_later_again() {
         let mut app = app();
+        app.later_layout = AlbumLayout::List;
         app.albums = vec![album("a", 1)];
         app.handle_key(key(KeyCode::Char('4')));
         assert_eq!(app.view, View::ListenLater);
@@ -4486,6 +4546,7 @@ mod tests {
         let mut app = app();
         app.artists = vec![artist("1", "A"), artist("2", "B"), artist("3", "C")];
         app.view = View::Artists;
+        app.artist_layout = AlbumLayout::List;
 
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.artist_selected, 1);
@@ -4556,17 +4617,17 @@ mod tests {
         let mut app = app();
         app.view = View::Favorites;
         app.handle_key(key(KeyCode::Char('w')));
-        assert_eq!(app.favorites_layout, AlbumLayout::Grid);
+        assert_eq!(app.favorites_layout, AlbumLayout::List);
         assert_eq!(
             app.favorite_artists_layout,
-            AlbumLayout::List,
+            AlbumLayout::Grid,
             "the other list is left alone"
         );
 
         app.handle_key(key(KeyCode::Tab));
         app.handle_key(key(KeyCode::Char('w')));
-        assert_eq!(app.favorite_artists_layout, AlbumLayout::Grid);
-        assert_eq!(app.favorites_layout, AlbumLayout::Grid);
+        assert_eq!(app.favorite_artists_layout, AlbumLayout::List);
+        assert_eq!(app.favorites_layout, AlbumLayout::List);
     }
 
     #[test]
@@ -4743,6 +4804,7 @@ mod tests {
     #[test]
     fn the_rail_keys_jump_without_depending_on_the_back_stack() {
         let mut app = app();
+        app.later_layout = AlbumLayout::List;
         app.albums = vec![album("a", 1)];
         // Drill in, then use the rail: back must not return to the detail.
         app.set_view(View::AlbumDetail);
@@ -4789,6 +4851,7 @@ mod tests {
         let mut app = app();
         app.detail = Some(album("al-1", 1));
         app.set_view(View::AlbumDetail);
+        app.layout = AlbumLayout::List;
         app.handle_key(key(KeyCode::Char('h'))); // Albums, with the album ahead
 
         app.handle_key(key(KeyCode::Char('?')));
@@ -4857,6 +4920,7 @@ mod tests {
     #[test]
     fn scrolling_keeps_the_selection_visible() {
         let mut app = app();
+        app.layout = AlbumLayout::List;
         app.albums = (0..50).map(|i| album(&i.to_string(), 1)).collect();
         app.selected = 30;
         // 24 rows of list area at 2 rows per entry = 12 visible entries.
@@ -4881,18 +4945,22 @@ mod tests {
     #[test]
     fn w_toggles_the_album_layout_and_says_so() {
         let mut app = app();
-        assert_eq!(app.layout, AlbumLayout::List);
-        app.handle_key(key(KeyCode::Char('w')));
-        assert_eq!(app.layout, AlbumLayout::Grid);
         assert_eq!(
-            app.status.as_ref().map(|s| s.text.as_str()),
-            Some("albums: wall")
+            app.layout,
+            AlbumLayout::Grid,
+            "a library opens on its covers"
         );
         app.handle_key(key(KeyCode::Char('w')));
         assert_eq!(app.layout, AlbumLayout::List);
         assert_eq!(
             app.status.as_ref().map(|s| s.text.as_str()),
             Some("albums: list")
+        );
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(app.layout, AlbumLayout::Grid);
+        assert_eq!(
+            app.status.as_ref().map(|s| s.text.as_str()),
+            Some("albums: wall")
         );
     }
 
@@ -4976,7 +5044,7 @@ mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
         }
         assert!(!app.should_quit, "Ctrl+Q must not quit");
-        assert_eq!(app.layout, AlbumLayout::List);
+        assert_eq!(app.layout, AlbumLayout::Grid, "Ctrl+W must not toggle it");
         assert!(!app.queue.is_shuffled());
     }
 }

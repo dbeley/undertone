@@ -100,17 +100,17 @@ def main():
             state_dir=tempfile.mkdtemp(prefix="undertone-screens-"),
         )
         app.wait(6)
-        shots.append(("The library", "Album list, with the rail, the list's own header and the three-column bar.", app.wait(0.5)))
+        shots.append(("The library", "What the app opens on: a wall of covers, with the rail and the three-column bar.", app.wait(0.5)))
 
-        app.send("w", 2.5)  # the wall
+        app.send("w", 2.5)  # rows
         shots.append(
             (
-                "The wall",
-                "`w` turns any album list into a wall of covers; each list keeps its own choice.",
+                "The list",
+                "`w` turns any wall back into rows; each list keeps its own choice.",
                 app.wait(0.6),
             )
         )
-        app.send("w", 2.5)  # back to rows
+        app.send("w", 2.5)  # back to the wall
 
         app.send("\r", 3)  # open the first album
         shots.append(("An album", "The album's cover and its tracks; the bar keeps playing state.", app.wait(0.5)))

@@ -10,6 +10,11 @@ than retouched.
 
     python3 scripts/screenshot.py ./result/bin/undertone
 
+It writes two frames, `docs/screenshot-wall.svg` (the library it opens on) and
+`docs/screenshot-album.svg` (an album, playing), because the two say different
+things: one is a library of covers, the other is what the bar does while a
+track runs.
+
 It reads the public demo server by default, because the screenshot is the one
 place the app has to look like itself rather than like a test fixture; set
 `UNDERTONE_SERVER`, `UNDERTONE_USER` and `UNDERTONE_PASSWORD` to photograph
@@ -559,27 +564,33 @@ def main():
     else:
         args.append("--player=null")
 
+    shots = []
     try:
         app = Capture(binary, args, env_extra=env)
-        app.wait(7 if offline else 12)
+        # The wall fills in one cover at a time as the worker encodes them, so
+        # the wait has to cover the whole screen, not just the first frame.
+        app.wait(8 if offline else 25)
+        # The status line outlives its TTL in the frame it was drawn in - the
+        # TTL only hides it at the next redraw, and an idle app draws none. So
+        # the startup "config: /tmp/..." would sit in the middle of the bar for
+        # ever. Down a row and back up is that redraw, and moves nothing.
+        app.send("jk", 1.5)
+        shots.append(("wall", svg(app)))
+
+        # Then an album, playing: the bottom bar is the other half of the UI.
+        # Every path through `open_a_busy_album` leaves an album open.
         open_a_busy_album(app)
-        # Play the first track: something has to be playing for the bottom bar
-        # to show what it looks like in use.
         app.send("\r", 5 if player else 2)  # playback runs on the clock
-        frame = app
+        shots.append(("album", svg(app)))
         app.quit()
     finally:
         if fixture:
             fixture.terminate()
 
-    out = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "docs",
-        "screenshot.svg",
-    )
-    with open(out, "w") as handle:
-        handle.write(svg(frame))
-    print(f"wrote {out} ({os.path.getsize(out)} bytes, {len(frame.images)} covers)")
+    for name, document in shots:
+        path = Path(__file__).resolve().parent.parent / "docs" / f"screenshot-{name}.svg"
+        path.write_text(document)
+        print(f"wrote {path} ({path.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":
