@@ -2486,9 +2486,9 @@ fn draw_bar_queue(frame: &mut Frame, app: &App, area: Rect) {
 fn key_hints(view: View) -> &'static str {
     match view {
         View::Albums => "S sort · w layout · a next · A end · * star",
-        View::AlbumDetail => "Enter play · a next · A end · i artist · h back",
-        View::Artists => "S sort · w layout · Enter open · h back",
-        View::ArtistDetail => "Tab pane · t songs · a next · A end · h back",
+        View::AlbumDetail => "Enter play · a next · A end · i artist · * star · h back",
+        View::Artists => "S sort · w layout · Enter open · * star · h back",
+        View::ArtistDetail => "Tab pane · t songs · a next · A end · * star · h back",
         View::Favorites => "Tab pane · w layout · a next · A end · * unstar",
         View::ListenLater => "w layout · z remove · a next · A end",
         View::Playlists => "Enter open · h back",
@@ -3309,6 +3309,25 @@ mod tests {
             assert!(
                 !key_hints(view).contains("w "),
                 "{view:?} has no wall, so `w` does nothing there: {}",
+                key_hints(view)
+            );
+        }
+    }
+
+    #[test]
+    fn the_star_key_is_advertised_wherever_it_can_act() {
+        // `*` stars an album on every album list and an artist on both artist
+        // views. A key that works but is never mentioned is a key nobody finds.
+        for view in [
+            View::Albums,
+            View::AlbumDetail,
+            View::Artists,
+            View::ArtistDetail,
+            View::Favorites,
+        ] {
+            assert!(
+                key_hints(view).contains('*'),
+                "{view:?} can star but hides the key: {}",
                 key_hints(view)
             );
         }
