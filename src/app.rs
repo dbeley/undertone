@@ -1106,6 +1106,32 @@ impl App {
         self.status(format!("removed {}", removed.title));
     }
 
+    /// `C`: empty the queue and stop the music.
+    ///
+    /// The queue is not the only copy of what to play: mpv holds the lookahead
+    /// window, so clearing without stopping it would leave the current track
+    /// playing on with nothing in the queue to name it.
+    pub fn clear_queue(&mut self) {
+        if self.view != View::Queue {
+            return;
+        }
+        if self.queue.is_empty() {
+            self.status("the queue is already empty");
+            return;
+        }
+        let count = self.queue.len();
+        let _ = self.player.stop();
+        self.queue.clear();
+        self.now = NowPlaying::default();
+        self.pending_seek = None;
+        self.queue_pin = None;
+        self.queue_view_scroll = 0;
+        self.status(format!(
+            "cleared {count} {}",
+            if count == 1 { "track" } else { "tracks" }
+        ));
+    }
+
     /// `J` / `K`: move the selected queue row down / up.
     ///
     /// The cursor follows the row you are carrying, and the player window is
@@ -2295,6 +2321,9 @@ impl App {
             KeyCode::Char('o') if self.view == View::Queue => self.open_queue_album(),
             KeyCode::Char('i') if self.view == View::Queue => self.open_queue_artist(),
             KeyCode::Char('x') if self.view == View::Queue => self.remove_queue_item(),
+            // `C` is the whole-queue version of `x`, the way `A` is the
+            // whole-queue version of `a`: the capital is the bigger action.
+            KeyCode::Char('C') if self.view == View::Queue => self.clear_queue(),
             KeyCode::Char('J') if self.view == View::Queue => self.move_queue_item(1),
             KeyCode::Char('K') if self.view == View::Queue => self.move_queue_item(-1),
             KeyCode::Char('i') if self.view == View::AlbumDetail => self.open_album_artist(),
@@ -4005,6 +4034,38 @@ mod tests {
         assert!(app.queue.is_empty());
         assert!(app.now.track.is_none(), "nothing is playing any more");
         assert!(!app.now.loaded);
+    }
+
+    #[test]
+    fn capital_c_clears_the_queue_and_stops_the_music() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b"), track("c")]);
+        app.play_current();
+        app.view = View::Queue;
+
+        app.handle_key(key(KeyCode::Char('C')));
+
+        assert!(app.queue.is_empty(), "every row is gone");
+        assert!(app.now.track.is_none(), "nothing is left to play");
+        assert!(!app.now.loaded);
+        assert!(app.queue.position().is_none());
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("cleared 3"), "{}", status.text);
+    }
+
+    #[test]
+    fn capital_c_outside_the_queue_is_not_a_clear() {
+        // The key only exists where the queue is on screen: a stray `C` on the
+        // album list must not wipe what is playing.
+        let mut app = app();
+        app.queue.replace(vec![track("a"), track("b")]);
+        app.play_current();
+        app.view = View::Albums;
+
+        app.handle_key(key(KeyCode::Char('C')));
+
+        assert_eq!(app.queue.len(), 2);
     }
 
     #[test]

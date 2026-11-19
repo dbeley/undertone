@@ -2140,6 +2140,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         HelpRow::Key("z", "keep for later"),
         HelpRow::Key("4", "listen later page"),
         HelpRow::Key("x", "queue: remove"),
+        HelpRow::Key("C", "queue: clear all"),
         HelpRow::Key("J / K", "queue: move"),
         HelpRow::Key("Tab", "next pane"),
         HelpRow::Key("t", "artist: song list"),
@@ -2494,7 +2495,7 @@ fn key_hints(view: View) -> &'static str {
         View::Playlists => "Enter open · h back",
         View::Search => "/ edit · Enter open · a next · A end",
         View::PlaylistDetail => "Enter play · a next · A end · h back",
-        View::Queue => "Enter play · x delete · J/K move · o/i album/artist",
+        View::Queue => "Enter play · x delete · C clear · J/K move · o/i album/artist",
         View::Help => "",
     }
 }
@@ -3343,6 +3344,9 @@ mod tests {
             !text.contains("w layout"),
             "album hints do not follow you: {text}"
         );
+        // The bar wraps a long hint, so the text of it is checked at the
+        // source: the wrapping is allowed to fall anywhere.
+        assert!(key_hints(View::Queue).contains("C clear"));
     }
     #[test]
     fn the_help_sheet_fits_an_eighty_by_twenty_four_terminal() {
@@ -3353,6 +3357,10 @@ mod tests {
         // either is missing the sheet has been clipped, which is what too tall
         // a popup does on the smallest terminal the rail still fits.
         assert!(text.contains("reload"), "{text}");
+        assert!(
+            text.contains("queue: clear all"),
+            "the newest queue key must not be the one clipped: {text}"
+        );
         assert!(text.contains("any key closes this"), "{text}");
     }
 

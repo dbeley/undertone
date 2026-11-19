@@ -86,7 +86,8 @@ Enter      open album · play track    p / Space  play / pause
 s / r      shuffle / repeat    +/-     volume      m  mute
 /          search              ?       help        Esc back
 a / A      queue after now / at the end   z  save / unsave album
-x / J / K  queue: remove / move down / move up
+x / C      queue: remove one / clear all
+J / K      queue: move down / move up
 *          star / unstar album
 o / i      album / artist of the selected queue track
 i          artist of the open album
