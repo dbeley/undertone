@@ -120,7 +120,7 @@ The album's cover and its tracks; the bar keeps playing state.
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │albums: wall                    │next
 Enter on an album to start         │Enter play · a next · A end · i │end of queue
-                                   │artist · h back                 │
+                                   │artist · * star · h back        │
                                    │                                │
 ```
 
@@ -156,8 +156,8 @@ One flat result list: albums first, then songs, each row labelled.
   Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │6 results for “fixture”         │next
-Enter on an album to start         │/ edit · Enter open · a next · A│end of queue
-                                   │end                             │
+Enter on an album to start         │/ edit · Enter open/play · o/i  │end of queue
+                                   │album/artist · a/A queue        │
                                    │                                │
 ```
 
@@ -230,7 +230,7 @@ Artists as a list; `w` turns this into a wall of covers.
   Help     ?│
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │S sort · w layout · Enter open ·│next
-Enter on an album to start         │h back                          │end of queue
+Enter on an album to start         │* star · h back                 │end of queue
                                    │                                │
                                    │                                │
 ```
@@ -267,7 +267,7 @@ Three panes: albums, similar artists, biography. Tab moves between them.
   Help     ?│                                               │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │Tab pane · t songs · a next · A │next
-Enter on an album to start         │end · h back                    │end of queue
+Enter on an album to start         │end · * star · h back           │end of queue
                                    │                                │
                                    │                                │
 ```
@@ -305,7 +305,7 @@ The left pane has two tabs: albums and the artist's most played tracks.
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │artist: top songs               │next
 Enter on an album to start         │Tab pane · t songs · a next · A │end of queue
-                                   │end · h back                    │
+                                   │end · * star · h back           │
                                    │                                │
 ```
 
@@ -341,7 +341,7 @@ What plays next; Enter starts from the cursor.
   Help     ?│ └────────────────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 nothing playing                    │artist: top songs               │next
-Enter on an album to start         │Enter play · x delete · J/K move│end of queue
-                                   │· o/i album/artist              │
+Enter on an album to start         │Enter play · x delete · C clear │end of queue
+                                   │· J/K move · o/i album/artist   │
                                    │                                │
 ```
