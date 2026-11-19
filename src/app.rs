@@ -1189,6 +1189,59 @@ impl App {
         }
     }
 
+    /// `o` on a search result: the album the row belongs to.
+    ///
+    /// An album row is already what `o` would open; a song row needs the album
+    /// id the server sends with it, which is why it is kept on the hit.
+    pub fn open_search_album(&mut self) {
+        match self.selected_search_album() {
+            Some(album) => self.open_album(album),
+            None => self.status("this result names no album"),
+        }
+    }
+
+    /// What `o` would open, without opening it. Kept apart so the mapping from
+    /// a row to an album can be read without a request.
+    fn selected_search_album(&self) -> Option<Album> {
+        match self.search.hits.get(self.search.selected)? {
+            SearchHit::Album(album) => Some(album.clone()),
+            SearchHit::Song(song) => song.album_id.clone().map(|id| Album {
+                id,
+                name: song.album.clone().unwrap_or_default(),
+                artist: song.artist.clone(),
+                artist_id: song.artist_id.clone(),
+                ..Default::default()
+            }),
+            // An artist row names no album of its own; Enter opens the artist.
+            SearchHit::Artist(_) => None,
+        }
+    }
+
+    /// `i` on a search result: the artist the row belongs to.
+    ///
+    /// Same rule as `o`: an artist row is the destination itself, while an
+    /// album or song row carries the artist id in its tags.
+    pub fn open_search_artist(&mut self) {
+        match self.selected_search_artist() {
+            Some((id, name)) => self.open_artist(&id, &name),
+            None => self.status("this result names no artist"),
+        }
+    }
+
+    fn selected_search_artist(&self) -> Option<(String, String)> {
+        match self.search.hits.get(self.search.selected)? {
+            SearchHit::Artist(artist) => Some((artist.id.clone(), artist.name.clone())),
+            SearchHit::Album(album) => album
+                .artist_id
+                .clone()
+                .map(|id| (id, album.artist.clone().unwrap_or_default())),
+            SearchHit::Song(song) => song
+                .artist_id
+                .clone()
+                .map(|id| (id, song.artist.clone().unwrap_or_default())),
+        }
+    }
+
     /// The server's playlists. Fetched once: the list changes only when someone
     /// edits it, and `R` re-reads it like every other list.
     pub fn open_playlists(&mut self) {
@@ -2326,6 +2379,10 @@ impl App {
             KeyCode::Char('C') if self.view == View::Queue => self.clear_queue(),
             KeyCode::Char('J') if self.view == View::Queue => self.move_queue_item(1),
             KeyCode::Char('K') if self.view == View::Queue => self.move_queue_item(-1),
+            // A search row can open the pages its track belongs to, using the
+            // same `o`/`i` the queue already spends on album and artist.
+            KeyCode::Char('o') if self.view == View::Search => self.open_search_album(),
+            KeyCode::Char('i') if self.view == View::Search => self.open_search_artist(),
             KeyCode::Char('i') if self.view == View::AlbumDetail => self.open_album_artist(),
             KeyCode::Tab if self.view == View::ArtistDetail => {
                 self.artist_pane = self.artist_pane.next()
@@ -3749,6 +3806,82 @@ mod tests {
 
         assert_eq!(app.queue.len(), 1);
         assert_eq!(app.now.track.as_ref().map(|t| t.id.as_str()), Some("s1"));
+    }
+
+    #[test]
+    fn o_and_i_on_a_song_result_name_its_album_and_its_artist() {
+        let mut app = app();
+        app.search.hits = vec![SearchHit::Song(Song {
+            id: "s1".into(),
+            title: "Idioteque".into(),
+            album: Some("Kid A".into()),
+            album_id: Some("al1".into()),
+            artist: Some("Radiohead".into()),
+            artist_id: Some("ar1".into()),
+            ..Default::default()
+        })];
+        app.search.selected = 0;
+
+        let album = app.selected_search_album().expect("the song's album");
+        assert_eq!(album.id, "al1");
+        assert_eq!(album.name, "Kid A");
+
+        let (id, name) = app.selected_search_artist().expect("the song's artist");
+        assert_eq!((id.as_str(), name.as_str()), ("ar1", "Radiohead"));
+    }
+
+    #[test]
+    fn o_and_i_on_a_song_without_ids_say_so_instead_of_guessing() {
+        let mut app = app();
+        app.search.hits = vec![SearchHit::Song(song("bare"))];
+        app.view = View::Search;
+        app.search.selected = 0;
+
+        app.handle_key(key(KeyCode::Char('o')));
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("names no album"), "{}", status.text);
+
+        app.handle_key(key(KeyCode::Char('i')));
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("names no artist"), "{}", status.text);
+
+        // Neither key plays the row: Enter is still the one that does that.
+        assert!(app.queue.is_empty());
+    }
+
+    #[test]
+    fn o_and_i_on_an_album_result_read_its_tags() {
+        let mut app = app();
+        app.search.hits = vec![SearchHit::Album(Album {
+            id: "al1".into(),
+            name: "Kid A".into(),
+            artist: Some("Radiohead".into()),
+            artist_id: Some("ar1".into()),
+            ..Default::default()
+        })];
+        app.search.selected = 0;
+
+        let album = app.selected_search_album().expect("the album itself");
+        assert_eq!(album.id, "al1");
+        let (id, name) = app.selected_search_artist().expect("its artist");
+        assert_eq!((id.as_str(), name.as_str()), ("ar1", "Radiohead"));
+    }
+
+    #[test]
+    fn o_on_an_artist_result_has_no_album_to_open() {
+        let mut app = app();
+        app.search.hits = vec![SearchHit::Artist(Artist {
+            id: "ar1".into(),
+            name: "Radiohead".into(),
+            ..Default::default()
+        })];
+        app.search.selected = 0;
+
+        assert!(app.selected_search_album().is_none());
+        // `i` on the artist row is the artist itself, which is what Enter
+        // would open too.
+        let (id, name) = app.selected_search_artist().expect("the artist");
+        assert_eq!((id.as_str(), name.as_str()), ("ar1", "Radiohead"));
     }
 
     #[test]

@@ -89,7 +89,7 @@ a / A      queue after now / at the end   z  save / unsave album
 x / C      queue: remove one / clear all
 J / K      queue: move down / move up
 *          star / unstar album
-o / i      album / artist of the selected queue track
+o / i      album / artist of a queue or search row
 i          artist of the open album
 Tab        switch pane (artist)  t     albums / songs (artist)
 S / R      change sort / reload         q   quit

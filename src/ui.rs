@@ -2108,6 +2108,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     // price of the key somebody opened this to look up.
     let left = [
         HelpRow::Key("Enter", "open · play"),
+        // `o` and `i` on a search row, where Enter would play a song: the
+        // same two keys the queue uses for the pages a track came from.
+        HelpRow::Key("o / i", "album / artist"),
         HelpRow::Key("p / Space", "play / pause"),
         HelpRow::Key("> / <", "next / previous"),
         HelpRow::Key("f / b", "seek ∓10s"),
@@ -2493,7 +2496,7 @@ fn key_hints(view: View) -> &'static str {
         View::Favorites => "Tab pane · w layout · a next · A end · * unstar",
         View::ListenLater => "w layout · z remove · a next · A end",
         View::Playlists => "Enter open · h back",
-        View::Search => "/ edit · Enter open · a next · A end",
+        View::Search => "/ edit · Enter open/play · o/i album/artist · a/A queue",
         View::PlaylistDetail => "Enter play · a next · A end · h back",
         View::Queue => "Enter play · x delete · C clear · J/K move · o/i album/artist",
         View::Help => "",
@@ -3347,6 +3350,7 @@ mod tests {
         // The bar wraps a long hint, so the text of it is checked at the
         // source: the wrapping is allowed to fall anywhere.
         assert!(key_hints(View::Queue).contains("C clear"));
+        assert!(key_hints(View::Search).contains("o/i album/artist"));
     }
     #[test]
     fn the_help_sheet_fits_an_eighty_by_twenty_four_terminal() {
