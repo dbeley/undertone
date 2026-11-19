@@ -56,6 +56,10 @@ ALBUMS = [
         "id": f"al-{i}",
         "name": name,
         "artist": artist,
+        # The ids a real server sends beside the names. Without them a search
+        # row or a queue row can name an album or an artist but cannot open
+        # either page, which is the one thing `o` and `i` do.
+        "artistId": f"ar-{i + 1}",
         "year": 2000 + i,
         "songCount": 3,
         "duration": 600,
@@ -77,7 +81,9 @@ def album_payload(album_id):
                 "id": f"{album['id']}-s{n}",
                 "title": f"Track {n + 1}",
                 "artist": album["artist"],
+                "artistId": album["artistId"],
                 "album": album["name"],
+                "albumId": album["id"],
                 "duration": 200,
                 "track": n + 1,
                 "suffix": "flac",
