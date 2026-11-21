@@ -1670,6 +1670,14 @@ impl App {
         let _ = self.player.play();
         self.now.playlist_base = base;
         self.now.playlist_len = window.len();
+
+        // A pending seek belongs to the track it was saved for: starting a
+        // different track must not jump into the middle of it.
+        let seek = self.pending_seek.take().filter(|_| {
+            self.now.track.as_ref().map(|track| track.id.as_str())
+                == self.queue.current().map(|item| item.id.as_str())
+        });
+
         // A track now plays, so the queue cursor goes back to following it:
         // the row you were browsing was a question about what to play, and it
         // has been answered.
@@ -1677,11 +1685,11 @@ impl App {
         self.adopt_current();
 
         // A restored session resumes where it left off, once the stream is
-        // actually open.
-        if let Some(seconds) = self.pending_seek.take() {
-            if self.player.seek(Seek::Absolute, seconds).is_ok() {
-                self.now.position = seconds;
-            }
+        // actually open. `FileLoaded` is what says so: mpv drops a seek sent
+        // before the file is there.
+        if let Some(seconds) = seek {
+            self.now.position = seconds;
+            self.pending_seek = Some(seconds);
         }
     }
 
@@ -1718,9 +1726,10 @@ impl App {
         }
         self.now.playlist_base = base;
         self.now.playlist_len = window.len();
-        if seconds > 0.5 {
-            let _ = self.player.seek(Seek::Absolute, seconds);
-        }
+        // Replacing the window restarts the stream. The spot is taken again
+        // once the new file reports `FileLoaded`; a seek sent now would be
+        // dropped and the track would start over.
+        self.pending_seek = (seconds > 0.5).then_some(seconds);
         if paused {
             let _ = self.player.pause(true);
         }
@@ -1781,6 +1790,9 @@ impl App {
             if self.queue.jump_to(target).is_none() {
                 return;
             }
+            // The track changed for real: a seek still waiting for the
+            // previous file has nothing to do with this one.
+            self.pending_seek = None;
             self.adopt_current();
         }
         self.top_up_playlist(index);
@@ -1820,6 +1832,7 @@ impl App {
             Step::Finished => {
                 self.now.paused = true;
                 self.now.loaded = false;
+                self.pending_seek = None;
                 self.status("end of queue");
             }
         }
@@ -2128,9 +2141,25 @@ impl App {
                 // restart the track rather than pause a corpse.
                 self.now.loaded = false;
                 self.now.paused = true;
+                self.pending_seek = None;
                 self.error(format!("player crashed: {message}"));
             }
-            PlayerEvent::FileLoaded | PlayerEvent::Volume(_) => {}
+            PlayerEvent::FileLoaded => self.resume_pending_seek(),
+            PlayerEvent::Volume(_) => {}
+        }
+    }
+
+    /// Take a seek that was waiting for the stream to open.
+    ///
+    /// mpv drops a seek issued before the file is loaded, which used to make a
+    /// rebuilt window (reorder, insert, remove) and a restored session start
+    /// from the top instead of where they left off.
+    fn resume_pending_seek(&mut self) {
+        let Some(seconds) = self.pending_seek.take() else {
+            return;
+        };
+        if self.player.seek(Seek::Absolute, seconds).is_ok() {
+            self.now.position = seconds;
         }
     }
 
@@ -4154,7 +4183,13 @@ mod tests {
 
         app.play_or_pause();
 
-        // The seek is handed over once; a later track change must not reuse it.
+        // Shown at once, so the bar does not flash 0:00 while the stream opens.
+        assert_eq!(app.now.position, 95.0);
+        assert_eq!(app.pending_seek, Some(95.0));
+
+        // The seek is handed over once mpv says the file is loaded; a later
+        // track change must not reuse it.
+        app.pump();
         assert_eq!(app.pending_seek, None);
         assert_eq!(app.now.position, 95.0);
         assert!(app.now.loaded);
@@ -4385,6 +4420,34 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["b", "a", "c"]);
         assert_eq!(app.queue_cursor(), 1, "the carried row is still selected");
+    }
+
+    #[test]
+    fn reordering_the_queue_keeps_the_position_to_resume_from() {
+        let mut app = app();
+        app.settings.auto_dj = false;
+        app.queue.replace(vec![track("a"), track("b"), track("c")]);
+        app.play_current();
+        app.pump();
+        app.now.position = 42.0;
+        app.view = View::Queue;
+
+        app.move_queue_item(1);
+
+        // The player window is rebuilt, which restarts the stream. The spot
+        // to take again waits for the new file to load.
+        assert_eq!(app.now.position, 42.0);
+        assert_eq!(app.pending_seek, Some(42.0));
+
+        app.pump();
+
+        assert_eq!(app.pending_seek, None, "the seek is handed over once");
+        assert_eq!(app.now.position, 42.0);
+        assert_eq!(
+            app.now.track.as_ref().map(|t| t.id.as_str()),
+            Some("a"),
+            "reordering does not change the track"
+        );
     }
 
     #[test]
