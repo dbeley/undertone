@@ -4,6 +4,7 @@
 //! changes, and `ui::draw` renders it. The only blocking calls are explicit
 //! user actions (opening an album, changing sort), never the tick path.
 
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -333,6 +334,16 @@ pub enum AlbumLayout {
     Grid,
 }
 
+/// What one background Auto DJ request found, and the track that asked for it.
+///
+/// The seed travels with the answer because it may land after the user has
+/// moved on: tracks with nothing to do with what is playing now must not be
+/// spliced into the queue.
+struct AutoDjFetch {
+    seed: String,
+    songs: Vec<Song>,
+}
+
 pub struct NowPlaying {
     pub track: Option<QueueItem>,
     pub position: f64,
@@ -519,9 +530,17 @@ pub struct App {
     /// Which of the two starred lists has the keyboard.
     pub favorites_pane: FavoritePane,
     /// The track Auto DJ last tried to extend from, so one barren track is not
-    /// retried on every transition.
+    /// retried on every transition. Recorded when the request is sent, not
+    /// when the answer lands.
     pub auto_dj_seed: Option<String>,
-    /// Where to jump once a restored track actually starts playing.
+    /// Answers coming back from the Auto DJ thread.
+    auto_dj_rx: Receiver<AutoDjFetch>,
+    /// A handle those threads reply on.
+    auto_dj_tx: Sender<AutoDjFetch>,
+    /// Where to jump once the next load reports `FileLoaded`. Set by a restored
+    /// session and by a window rebuilt mid-track (reorder, insert, remove):
+    /// a seek sent before mpv has the stream open is dropped, and the track
+    /// restarts from the top instead.
     pub pending_seek: Option<f64>,
     pub selected: usize,
     pub scroll: usize,
@@ -578,6 +597,7 @@ impl App {
     ) -> Self {
         let painter = Painter::new(protocol);
         let listen_albums = listen_later.albums();
+        let (auto_dj_tx, auto_dj_rx) = mpsc::channel();
         Self {
             client,
             queue: Queue::new(),
@@ -643,6 +663,8 @@ impl App {
             favorite_artists_layout: AlbumLayout::Grid,
             favorites_pane: FavoritePane::Albums,
             auto_dj_seed: None,
+            auto_dj_rx,
+            auto_dj_tx,
             pending_seek: None,
             selected: 0,
             scroll: 0,
@@ -1741,9 +1763,10 @@ impl App {
             self.dispatch_scrobbles(actions);
         }
 
-        // Top the queue up from here rather than from the tick: this runs once
-        // per track, so a slow server costs one transition instead of making
-        // the UI stutter every second.
+        // Top the queue up from here rather than from the tick: a transition
+        // is the moment the genre to extend from changes, and one attempt per
+        // track is what keeps a barren track from being asked about every
+        // second. The request itself runs off the UI thread.
         self.auto_dj_top_up();
     }
 
@@ -1814,9 +1837,12 @@ impl App {
 
     /// Extend the queue with similar tracks when it is running out.
     ///
-    /// Blocking, and deliberately so: it runs once per track transition, and
-    /// the alternative - a background fetch - would have to splice songs into a
-    /// queue the cursor indexes while the user is moving through it.
+    /// The request runs on its own thread. It used to block, justified by
+    /// running once per transition, but a slow server then froze the screen at
+    /// exactly the moment the queue was running dry - the worst time to stop
+    /// taking keys. `drain_auto_dj` splices the answer in on the UI thread,
+    /// which is the only place that owns the queue cursor and the player's
+    /// window.
     pub fn auto_dj_top_up(&mut self) {
         if !self.settings.auto_dj {
             return;
@@ -1840,47 +1866,87 @@ impl App {
         }
         self.auto_dj_seed = Some(seed.clone());
 
-        let similar = self
-            .client
-            .similar_songs(&seed, Self::AUTO_DJ_BATCH)
-            .unwrap_or_default();
-        let mut additions = self.unheard(similar);
-        if additions.is_empty() {
-            // `getSimilarSongs` needs Last.fm data or a rich library: on the
-            // demo it returns tracks from the same album, which are usually
-            // already queued. Falling back only on *error* would leave Auto DJ
-            // doing nothing at all on such a server, so fall back when the
-            // similar result adds nothing new either. Keeping the music
-            // playing beats stopping dead.
-            additions = self.unheard(
-                self.client
-                    .random_songs(Self::AUTO_DJ_BATCH)
-                    .unwrap_or_default(),
-            );
-        }
+        // Snapshot of what is queued now: it decides whether the similar
+        // answer adds anything, which is what decides whether the random
+        // fallback is needed. The queue is filtered again when the answer
+        // lands, because the user may have queued something meanwhile.
+        let queued = self.queued_ids();
+        let client = self.client.clone();
+        let tx = self.auto_dj_tx.clone();
+        std::thread::spawn(move || {
+            let similar = client
+                .similar_songs(&seed, Self::AUTO_DJ_BATCH)
+                .unwrap_or_default();
+            let mut songs = unheard_from(similar, &queued);
+            if songs.is_empty() {
+                // `getSimilarSongs` needs Last.fm data or a rich library: on
+                // the demo it returns tracks from the same album, which are
+                // usually already queued. Falling back only on *error* would
+                // leave Auto DJ doing nothing at all on such a server, so fall
+                // back when the similar result adds nothing new either.
+                // Keeping the music playing beats stopping dead.
+                songs = unheard_from(
+                    client.random_songs(Self::AUTO_DJ_BATCH).unwrap_or_default(),
+                    &queued,
+                );
+            }
+            let _ = tx.send(AutoDjFetch { seed, songs });
+        });
+    }
 
-        if additions.is_empty() {
-            return;
+    /// Splice any finished Auto DJ answers into the queue.
+    ///
+    /// Runs on the UI thread, from `pump`, so the queue is only ever changed
+    /// between events rather than while the cursor is being read.
+    fn drain_auto_dj(&mut self) {
+        while let Ok(fetch) = self.auto_dj_rx.try_recv() {
+            // A seed that is no longer queued means the user started something
+            // else while the answer was in flight; its similar tracks have no
+            // business landing in the new queue.
+            if !self.queue.items().iter().any(|item| item.id == fetch.seed) {
+                continue;
+            }
+            // Repeat and a healthy lookahead make the answer unnecessary, and
+            // both can change while the request is out.
+            if !self.settings.auto_dj || self.queue.repeat() != Repeat::Off {
+                continue;
+            }
+            if self.queue.upcoming(Self::AUTO_DJ_MIN_AHEAD).len() >= Self::AUTO_DJ_MIN_AHEAD {
+                continue;
+            }
+
+            let additions = self.unheard(fetch.songs);
+            if additions.is_empty() {
+                continue;
+            }
+            let count = additions.len();
+            let items: Vec<QueueItem> = additions.iter().map(queue_item).collect();
+            self.queue.append(items);
+
+            // The player's window was topped up before these tracks existed.
+            // Handing them over now is what makes the transition they were
+            // fetched for gapless.
+            if self.now.loaded {
+                if let Some(pos) = self.queue.position() {
+                    self.top_up_playlist(pos.saturating_sub(self.now.playlist_base));
+                }
+            }
+
+            self.status(format!("auto dj: {count} more queued"));
+            self.needs_redraw = true;
         }
-        let count = additions.len();
-        let items: Vec<QueueItem> = additions.iter().map(queue_item).collect();
-        self.queue.append(items);
-        self.status(format!("auto dj: {count} more queued"));
-        self.needs_redraw = true;
     }
 
     /// Drop candidates already queued, and the track that seeded them.
     fn unheard(&self, candidates: Vec<Song>) -> Vec<Song> {
-        let queued: std::collections::HashSet<&str> = self
-            .queue
+        unheard_from(candidates, &self.queued_ids())
+    }
+
+    fn queued_ids(&self) -> std::collections::HashSet<String> {
+        self.queue
             .items()
             .iter()
-            .map(|item| item.id.as_str())
-            .collect();
-        candidates
-            .into_iter()
-            .filter(|song| !queued.contains(song.id.as_str()))
-            .take(Self::AUTO_DJ_BATCH as usize)
+            .map(|item| item.id.clone())
             .collect()
     }
 
@@ -2002,6 +2068,9 @@ impl App {
     /// Apply player events and the passage of time. Called on every tick and
     /// whenever the event loop wakes.
     pub fn pump(&mut self) {
+        // Before the player's events: a fetch that landed in the same tick may
+        // be what keeps an `Idle` from being the end of the queue.
+        self.drain_auto_dj();
         for event in self.player.drain_events() {
             self.on_player_event(event);
         }
@@ -3118,6 +3187,18 @@ fn scroll_grid(selected: &mut usize, scroll: &mut usize, cols: usize, visible_ro
     }
 }
 
+/// Drop candidates whose id is already in `queued`, capping the batch.
+///
+/// Takes the snapshot by reference so the Auto DJ thread can use it without
+/// touching the app's queue.
+fn unheard_from(candidates: Vec<Song>, queued: &std::collections::HashSet<String>) -> Vec<Song> {
+    candidates
+        .into_iter()
+        .filter(|song| !queued.contains(&song.id))
+        .take(App::AUTO_DJ_BATCH as usize)
+        .collect()
+}
+
 /// One song as the queue and the now-playing bar need it.
 fn queue_item(song: &Song) -> QueueItem {
     QueueItem {
@@ -3595,6 +3676,77 @@ mod tests {
         let picked = app.unheard(vec![song("b"), song("c"), song("c")]);
         let ids: Vec<&str> = picked.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["c", "c"], "only the unqueued survive");
+    }
+
+    #[test]
+    fn an_auto_dj_answer_is_spliced_in_by_the_ui_thread() {
+        let mut app = app();
+        app.settings.auto_dj = true;
+        app.now.track = Some(track("seed"));
+        app.now.loaded = true;
+        app.queue.replace(vec![track("seed")]);
+        app.auto_dj_seed = Some("seed".into());
+
+        // What the fetch thread sends back sits in the channel: the worker
+        // itself never touches the queue.
+        app.auto_dj_tx
+            .send(AutoDjFetch {
+                seed: "seed".into(),
+                songs: vec![song("a"), song("b")],
+            })
+            .unwrap();
+        assert_eq!(app.queue.len(), 1, "the worker must leave the queue alone");
+
+        app.pump();
+
+        assert_eq!(app.queue.len(), 3);
+        let status = app.status.as_ref().expect("a message");
+        assert!(status.text.contains("auto dj"), "{}", status.text);
+    }
+
+    #[test]
+    fn an_auto_dj_answer_for_a_queue_that_moved_on_is_dropped() {
+        let mut app = app();
+        app.settings.auto_dj = true;
+        app.now.track = Some(track("other"));
+        app.now.loaded = true;
+        app.queue.replace(vec![track("seed")]);
+        app.auto_dj_tx
+            .send(AutoDjFetch {
+                seed: "seed".into(),
+                songs: vec![song("a"), song("b")],
+            })
+            .unwrap();
+
+        // The user started something else while the request was out.
+        app.queue.replace(vec![track("other")]);
+        app.pump();
+
+        assert_eq!(app.queue.len(), 1, "a stale answer must not land");
+    }
+
+    #[test]
+    fn an_auto_dj_answer_drops_what_was_queued_meanwhile() {
+        let mut app = app();
+        app.settings.auto_dj = true;
+        app.now.track = Some(track("seed"));
+        app.now.loaded = true;
+        app.queue.replace(vec![track("seed")]);
+        app.auto_dj_seed = Some("seed".into());
+        app.auto_dj_tx
+            .send(AutoDjFetch {
+                seed: "seed".into(),
+                songs: vec![song("a"), song("b")],
+            })
+            .unwrap();
+
+        // The filter that decides the fallback ran when the request was sent,
+        // so the answer can contain something the user queued since.
+        app.queue.append(vec![track("a")]);
+        app.pump();
+
+        let ids: Vec<&str> = app.queue.items().iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec!["seed", "a", "b"]);
     }
 
     // ---------------------------------------------------------------- gapless
